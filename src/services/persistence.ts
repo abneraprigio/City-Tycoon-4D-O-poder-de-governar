@@ -11,7 +11,14 @@ import {
   where,
 } from 'firebase/firestore';
 import { signInWithPopup, signOut } from 'firebase/auth';
-import { auth, db, googleProvider, handleFirestoreError, OperationType } from '../firebase';
+import {
+  auth,
+  db,
+  firebaseAvailable,
+  googleProvider,
+  handleFirestoreError,
+  OperationType,
+} from '../firebase';
 import type { EndGameOutcome } from '../types/game';
 
 const LOCAL_SAVE_KEY = 'city_tycoon_4d_save_v1';
@@ -53,7 +60,16 @@ function sanitizeId(raw: string): string {
   return cleaned || `city_${Date.now()}`;
 }
 
+function hasLocalStorage(): boolean {
+  try {
+    return typeof localStorage !== 'undefined';
+  } catch {
+    return false;
+  }
+}
+
 export function saveCityLocal(snapshot: Record<string, unknown>): boolean {
+  if (!hasLocalStorage()) return false;
   try {
     localStorage.setItem(LOCAL_SAVE_KEY, JSON.stringify(snapshot));
     return true;
@@ -62,21 +78,34 @@ export function saveCityLocal(snapshot: Record<string, unknown>): boolean {
   }
 }
 
-export function loadCityLocal(): Record<string, unknown> | null {
+export function loadCityLocalSafe(): {
+  status: 'empty' | 'ok' | 'corrupted';
+  snapshot: Record<string, unknown> | null;
+} {
+  if (!hasLocalStorage()) return { status: 'empty', snapshot: null };
   try {
     const raw = localStorage.getItem(LOCAL_SAVE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.tiles)) {
-      return null;
+    if (!raw) return { status: 'empty', snapshot: null };
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { status: 'corrupted', snapshot: null };
     }
-    return parsed;
+    const obj = parsed as Record<string, unknown>;
+    if (!Array.isArray(obj.tiles)) {
+      return { status: 'corrupted', snapshot: null };
+    }
+    return { status: 'ok', snapshot: obj };
   } catch {
-    return null;
+    return { status: 'corrupted', snapshot: null };
   }
 }
 
+export function loadCityLocal(): Record<string, unknown> | null {
+  return loadCityLocalSafe().snapshot;
+}
+
 export function clearCityLocal(): void {
+  if (!hasLocalStorage()) return;
   try {
     localStorage.removeItem(LOCAL_SAVE_KEY);
   } catch {
@@ -85,6 +114,9 @@ export function clearCityLocal(): void {
 }
 
 export async function signInWithGoogle() {
+  if (!firebaseAvailable || !auth || !googleProvider) {
+    throw new Error('Sincronização em nuvem indisponível no modo local.');
+  }
   const result = await signInWithPopup(auth, googleProvider);
   if (result.user) {
     await ensureUserProfile(result.user.uid, result.user.displayName || 'Prefeito(a)');
@@ -93,10 +125,12 @@ export async function signInWithGoogle() {
 }
 
 export async function signOutGoogle() {
+  if (!firebaseAvailable || !auth) return;
   await signOut(auth);
 }
 
 export async function ensureUserProfile(uid: string, displayName: string): Promise<void> {
+  if (!firebaseAvailable || !db) return;
   const safeUid = sanitizeId(uid);
   const path = `users/${safeUid}`;
   try {
@@ -134,6 +168,9 @@ export async function saveCityToCloud(params: {
   developmentLevel: number;
   stateSnapshot: Record<string, unknown>;
 }): Promise<string> {
+  if (!firebaseAvailable || !db || !auth) {
+    throw new Error('Firebase indisponível. Utilize o salvamento local do navegador.');
+  }
   const user = auth.currentUser;
   if (!user) {
     throw new Error('Faça login com sua conta Google para salvar na nuvem.');
@@ -175,6 +212,7 @@ export async function saveCityToCloud(params: {
 }
 
 export async function loadCitiesFromCloud(): Promise<CloudCitySummary[]> {
+  if (!firebaseAvailable || !db || !auth) return [];
   const user = auth.currentUser;
   if (!user) return [];
 
@@ -204,6 +242,7 @@ export async function loadCitiesFromCloud(): Promise<CloudCitySummary[]> {
 }
 
 export async function deleteCityFromCloud(slotId: string): Promise<void> {
+  if (!firebaseAvailable || !db || !auth) return;
   const user = auth.currentUser;
   if (!user) return;
   const safeId = sanitizeId(slotId);
@@ -225,6 +264,7 @@ export async function saveLegacyToCloud(params: {
   yearsServed: number;
   summary: string;
 }): Promise<void> {
+  if (!firebaseAvailable || !db || !auth) return;
   const user = auth.currentUser;
   if (!user) return;
   const legacyId = sanitizeId(`legacy_${user.uid}_${Date.now()}`);
@@ -248,6 +288,7 @@ export async function saveLegacyToCloud(params: {
 }
 
 export async function loadLegaciesFromCloud(): Promise<CloudLegacySummary[]> {
+  if (!firebaseAvailable || !db || !auth) return [];
   const user = auth.currentUser;
   if (!user) return [];
   const path = 'legacies';

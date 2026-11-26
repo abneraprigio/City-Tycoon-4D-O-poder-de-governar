@@ -173,6 +173,10 @@ export type InteractionTool =
   | 'buy_land'
   | 'sell_land';
 
+export type GraphicsQuality = 'low' | 'medium' | 'high' | 'ultra';
+
+export type CameraMode = 'strategic' | 'drone' | 'follow';
+
 export interface EconomyState {
   treasury: number;
   debt: number;
@@ -187,6 +191,7 @@ export interface EconomyState {
   lastMonthlyRevenue: number;
   lastMonthlyExpense: number;
   lastMonthlyNet: number;
+  settledItbiThisMonth?: number;
   revenueBreakdown: {
     iptu: number;
     iss: number;

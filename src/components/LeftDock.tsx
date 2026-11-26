@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   Award,
   Building2,
@@ -19,6 +19,7 @@ import {
   ThematicMapMode,
 } from '../types/game';
 import { LeftTabId, useGameStore } from '../store/useGameStore';
+import { getBuildingThumbnails } from '../engine/buildingThumbnails';
 
 const BUILD_CATEGORIES: { id: BuildingCategory; label: string }[] = [
   { id: 'residential', label: 'Residencial' },
@@ -43,6 +44,7 @@ const THEMATIC_LAYERS: { id: ThematicMapMode; label: string; hint: string }[] = 
 
 export const LeftDock: React.FC = () => {
   const [buildCategory, setBuildCategory] = useState<BuildingCategory>('residential');
+  const thumbnails = useMemo(() => getBuildingThumbnails(), []);
 
   const zenMode = useGameStore((s) => s.zenMode);
   const activeLeftTab = useGameStore((s) => s.activeLeftTab);
@@ -160,12 +162,13 @@ export const LeftDock: React.FC = () => {
                       const locked = developmentLevel < b.unlockLevel;
                       const isSelected = activeTool === 'build' && selectedBuildType === b.id;
                       const reqLevel = DEVELOPMENT_LEVELS.find((l) => l.level === b.unlockLevel);
+                      const thumb = thumbnails[b.id];
                       return (
                         <button
                           key={b.id}
                           disabled={locked}
                           onClick={() => setActiveTool('build', b.id)}
-                          className={`w-full text-left p-2.5 rounded border transition-colors ${
+                          className={`w-full text-left p-2 rounded border transition-colors flex items-start gap-2.5 ${
                             locked
                               ? 'bg-slate-900/40 border-slate-800/70 opacity-55 cursor-not-allowed'
                               : isSelected
@@ -173,24 +176,33 @@ export const LeftDock: React.FC = () => {
                               : 'bg-slate-900/80 border-slate-800 hover:border-slate-600'
                           }`}
                         >
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="font-semibold text-slate-100">{b.name}</span>
-                            <span className="font-mono-num text-emerald-400 font-semibold">
-                              R$ {b.cost.toLocaleString('pt-BR')}
-                            </span>
-                          </div>
-                          <p className="text-[11px] text-slate-400 mt-1 leading-snug">{b.description}</p>
-                          <div className="flex items-center gap-2 mt-1.5 text-[11px] text-slate-300 font-mono-num">
-                            {b.housingCapacity > 0 && <span>+{b.housingCapacity} moradias</span>}
-                            {b.jobsProvided > 0 && <span>+{b.jobsProvided} vagas</span>}
-                            {b.monthlyRevenue > 0 && (
-                              <span className="text-sky-400">Rec. R$ {b.monthlyRevenue.toLocaleString('pt-BR')}</span>
-                            )}
-                            {locked && (
-                              <span className="text-amber-400">
-                                Desbloqueia: Nível {b.unlockLevel} ({reqLevel?.name})
+                          {thumb && (
+                            <img
+                              src={thumb}
+                              alt={b.name}
+                              className="w-10 h-10 rounded bg-slate-950 border border-slate-800 shrink-0 object-contain mt-0.5"
+                            />
+                          )}
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="font-semibold text-slate-100 truncate">{b.name}</span>
+                              <span className="font-mono-num text-emerald-400 font-semibold shrink-0">
+                                R$ {b.cost.toLocaleString('pt-BR')}
                               </span>
-                            )}
+                            </div>
+                            <p className="text-[11px] text-slate-400 mt-0.5 leading-snug">{b.description}</p>
+                            <div className="flex items-center gap-2 mt-1 text-[11px] text-slate-300 font-mono-num">
+                              {b.housingCapacity > 0 && <span>+{b.housingCapacity} moradias</span>}
+                              {b.jobsProvided > 0 && <span>+{b.jobsProvided} vagas</span>}
+                              {b.monthlyRevenue > 0 && (
+                                <span className="text-sky-400">Rec. R$ {b.monthlyRevenue.toLocaleString('pt-BR')}</span>
+                              )}
+                              {locked && (
+                                <span className="text-amber-400">
+                                  Nv.{b.unlockLevel} ({reqLevel?.name})
+                                </span>
+                              )}
+                            </div>
                           </div>
                         </button>
                       );
@@ -232,23 +244,33 @@ export const LeftDock: React.FC = () => {
                     .filter((b) => b.category === 'infra')
                     .map((b) => {
                       const isSelected = activeTool === 'build' && selectedBuildType === b.id;
+                      const thumb = thumbnails[b.id];
                       return (
                         <button
                           key={b.id}
                           onClick={() => setActiveTool('build', b.id)}
-                          className={`w-full text-left p-2.5 rounded border transition-colors ${
+                          className={`w-full text-left p-2 rounded border transition-colors flex items-start gap-2.5 ${
                             isSelected
                               ? 'bg-amber-500/15 border-amber-400'
                               : 'bg-slate-900/80 border-slate-800 hover:border-slate-600'
                           }`}
                         >
-                          <div className="flex items-center justify-between">
-                            <span className="font-semibold text-slate-100">{b.name}</span>
-                            <span className="font-mono-num text-emerald-400 font-semibold">
-                              R$ {b.cost.toLocaleString('pt-BR')}
-                            </span>
+                          {thumb && (
+                            <img
+                              src={thumb}
+                              alt={b.name}
+                              className="w-10 h-10 rounded bg-slate-950 border border-slate-800 shrink-0 object-contain mt-0.5"
+                            />
+                          )}
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="font-semibold text-slate-100 truncate">{b.name}</span>
+                              <span className="font-mono-num text-emerald-400 font-semibold shrink-0">
+                                R$ {b.cost.toLocaleString('pt-BR')}
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-slate-400 mt-0.5">{b.description}</p>
                           </div>
-                          <p className="text-[11px] text-slate-400 mt-1">{b.description}</p>
                         </button>
                       );
                     })}

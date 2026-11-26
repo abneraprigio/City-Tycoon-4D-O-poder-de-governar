@@ -1,12 +1,41 @@
-import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider } from 'firebase/auth';
-import { doc, getDocFromServer, getFirestore } from 'firebase/firestore';
+import { FirebaseApp, getApps, initializeApp } from 'firebase/app';
+import { Auth, getAuth, GoogleAuthProvider } from 'firebase/auth';
+import { doc, Firestore, getDocFromServer, getFirestore } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
-const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
-export const auth = getAuth(app);
-export const googleProvider = new GoogleAuthProvider();
+let app: FirebaseApp | null = null;
+let dbInstance: Firestore | null = null;
+let authInstance: Auth | null = null;
+let providerInstance: GoogleAuthProvider | null = null;
+let isFirebaseReady = false;
+
+try {
+  const hasConfig =
+    typeof window !== 'undefined' &&
+    Boolean(firebaseConfig?.apiKey) &&
+    Boolean(firebaseConfig?.projectId);
+
+  if (hasConfig) {
+    app = getApps().length > 0 ? getApps()[0] : initializeApp(firebaseConfig);
+    dbInstance = firebaseConfig.firestoreDatabaseId
+      ? getFirestore(app, firebaseConfig.firestoreDatabaseId)
+      : getFirestore(app);
+    authInstance = getAuth(app);
+    providerInstance = new GoogleAuthProvider();
+    isFirebaseReady = true;
+  }
+} catch {
+  app = null;
+  dbInstance = null;
+  authInstance = null;
+  providerInstance = null;
+  isFirebaseReady = false;
+}
+
+export const db = dbInstance;
+export const auth = authInstance;
+export const googleProvider = providerInstance;
+export const firebaseAvailable = isFirebaseReady;
 
 export enum OperationType {
   CREATE = 'create',
@@ -39,16 +68,17 @@ export function handleFirestoreError(
   operationType: OperationType,
   path: string | null,
 ): never {
+  const currentUser = authInstance?.currentUser;
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
     authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified,
-      isAnonymous: auth.currentUser?.isAnonymous,
-      tenantId: auth.currentUser?.tenantId,
+      userId: currentUser?.uid,
+      email: currentUser?.email,
+      emailVerified: currentUser?.emailVerified,
+      isAnonymous: currentUser?.isAnonymous,
+      tenantId: currentUser?.tenantId,
       providerInfo:
-        auth.currentUser?.providerData?.map((provider) => ({
+        currentUser?.providerData?.map((provider) => ({
           providerId: provider.providerId,
           email: provider.email,
         })) || [],
@@ -60,14 +90,14 @@ export function handleFirestoreError(
   throw new Error(JSON.stringify(errInfo));
 }
 
-export async function testConnection(): Promise<void> {
+export async function testConnection(): Promise<boolean> {
+  if (!dbInstance || (typeof navigator !== 'undefined' && navigator.onLine === false)) {
+    return false;
+  }
   try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.error('Please check your Firebase configuration.');
-    }
+    await getDocFromServer(doc(dbInstance, 'test', 'connection'));
+    return true;
+  } catch {
+    return false;
   }
 }
-
-void testConnection();

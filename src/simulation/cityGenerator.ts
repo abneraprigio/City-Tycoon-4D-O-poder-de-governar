@@ -192,7 +192,7 @@ export function createInitialTiles(): TileData[] {
 
   // Starter Commerce & Light Industry
   placeStarter(12, 10, 'padaria', 'private', 'Panificadora Aurora', 'init_c1');
-  placeStarter(14, 13, 'fabrica_pequena', 'private', 'Metalúrgica Vale Verde', 'init_i1');
+  placeStarter(14, 14, 'fabrica_pequena', 'private', 'Metalúrgica Vale Verde', 'init_i1');
 
   return tiles;
 }
@@ -236,6 +236,7 @@ export function createInitialEconomy(): EconomyState {
     lastMonthlyRevenue: 86500,
     lastMonthlyExpense: 52400,
     lastMonthlyNet: 34100,
+    settledItbiThisMonth: 0,
     revenueBreakdown: {
       iptu: 18500,
       iss: 14000,
@@ -258,9 +259,9 @@ export function createInitialEconomy(): EconomyState {
 export function createInitialIndicators(): CityIndicators {
   return {
     population: 150,
-    jobsTotal: 129,
-    employed: 138,
-    unemploymentRate: 8.0,
+    jobsTotal: 145,
+    employed: 88,
+    unemploymentRate: 5.4,
     housingCapacity: 208,
     housingDeficit: 0,
     popularity: 70,

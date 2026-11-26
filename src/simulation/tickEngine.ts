@@ -352,6 +352,43 @@ export function updateCitizenAttributesAndThoughts(
       t.building.watered,
   );
 
+  const laborForce = Math.max(1, Math.round(indicators.population * 0.62));
+  const targetEmployedRatio =
+    indicators.jobsTotal > 0 ? Math.min(1, indicators.employed / laborForce) : 0;
+  const maxEmployedAgents =
+    indicators.jobsTotal <= 0 || workplaces.length === 0
+      ? 0
+      : Math.min(citizens.length, indicators.jobsTotal, Math.round(citizens.length * targetEmployedRatio));
+
+  // Clear invalid/non-operational homes and jobs first
+  let employedAgentsCount = 0;
+  for (let i = 0; i < citizens.length; i++) {
+    const c = citizens[i];
+    if (c.homeTileKey) {
+      const [hx, hz] = c.homeTileKey.split(',').map(Number);
+      const hTile = getTile(tiles, hx, hz);
+      if (!hTile?.building || BUILDING_CATALOG[hTile.building.type].housingCapacity <= 0) {
+        c.homeTileKey = null;
+      }
+    }
+    if (c.employedAtId) {
+      const wTile = tiles.find((t) => t.building?.id === c.employedAtId);
+      const stillOperational = Boolean(
+        wTile?.building &&
+          BUILDING_CATALOG[wTile.building.type].jobsProvided > 0 &&
+          wTile.building.powered &&
+          wTile.building.watered,
+      );
+      if (!stillOperational || employedAgentsCount >= maxEmployedAgents) {
+        c.employedAtId = null;
+        c.employedAtName = null;
+        c.income = 0;
+      } else {
+        employedAgentsCount++;
+      }
+    }
+  }
+
   for (let i = 0; i < citizens.length; i++) {
     const c = citizens[i];
 
@@ -361,20 +398,14 @@ export function updateCitizenAttributesAndThoughts(
       c.homeTileKey = `${h.x},${h.z}`;
     }
 
-    // Assign job if unemployed and jobs available
-    if (!c.employedAtId && workplaces.length > 0 && indicators.unemploymentRate < 18) {
-      const w = workplaces[Math.floor(Math.random() * workplaces.length)];
+    // Assign job only if real capacity allows
+    if (!c.employedAtId && workplaces.length > 0 && employedAgentsCount < maxEmployedAgents) {
+      const w = workplaces[i % workplaces.length];
       if (w.building) {
         c.employedAtId = w.building.id;
         c.employedAtName = BUILDING_CATALOG[w.building.type].name;
         c.income = c.education === 'Básico' ? 1950 : c.education === 'Médio' ? 3600 : 7500;
-      }
-    } else if (c.employedAtId) {
-      const stillExists = tiles.some((t) => t.building?.id === c.employedAtId);
-      if (!stillExists) {
-        c.employedAtId = null;
-        c.employedAtName = null;
-        c.income = 0;
+        employedAgentsCount++;
       }
     }
 
@@ -500,7 +531,7 @@ export function processMonthlyCycle(params: {
   let triggeredEvent: GameEvent | null = null;
   let endGameReport: EndGameReport | null = null;
 
-  const grid = recomputeCityGridMetrics(tiles, economy, politics);
+  recomputeCityGridMetrics(tiles, economy, politics);
 
   // 1. Private building evolution & organic concession construction
   let upgradedCount = 0;
@@ -553,6 +584,9 @@ export function processMonthlyCycle(params: {
     }
   }
 
+  // Recompute urban grid metrics after private upgrades and constructions, before monthly finance & indicators
+  const grid = recomputeCityGridMetrics(tiles, economy, politics);
+
   // 2. Population growth / migration
   const currentPop = params.indicators.population;
   const housingGap = grid.housingCapacity - currentPop;
@@ -568,13 +602,20 @@ export function processMonthlyCycle(params: {
   // Scale visible 3D citizen agents smoothly (between 24 and 110)
   const targetAgentCount = Math.min(110, Math.max(24, Math.round(18 + Math.sqrt(newPop) * 1.45)));
   const homes = tiles.filter((t) => t.building && BUILDING_CATALOG[t.building.type].housingCapacity > 0);
-  const workplaces = tiles.filter((t) => t.building && BUILDING_CATALOG[t.building.type].jobsProvided > 0);
+  const workplaces = tiles.filter(
+    (t) =>
+      t.building &&
+      BUILDING_CATALOG[t.building.type].jobsProvided > 0 &&
+      t.building.powered &&
+      t.building.watered,
+  );
 
   if (citizens.length < targetAgentCount && homes.length > 0) {
     const toAdd = Math.min(8, targetAgentCount - citizens.length);
     for (let k = 0; k < toAdd; k++) {
       const h = homes[Math.floor(Math.random() * homes.length)];
-      const w = workplaces.length > 0 ? workplaces[Math.floor(Math.random() * workplaces.length)] : null;
+      const canHaveJob = grid.jobsTotal > 0 && workplaces.length > 0 && k < grid.jobsTotal;
+      const w = canHaveJob ? workplaces[Math.floor(Math.random() * workplaces.length)] : null;
       citizens.push(
         createCitizenAgent(
           citizens.length + k + params.year * 100 + params.month * 10,
@@ -626,9 +667,14 @@ export function processMonthlyCycle(params: {
   iptu = Math.round(iptu * overTaxFactor);
   iss = Math.round(iss * overTaxFactor);
   const transfers = Math.round(28000 + newPop * 145 + params.developmentLevel * 12000);
-  const itbi = Math.round(economy.revenueBreakdown.itbi * 0.35 + (newPop * 18) * (economy.itbiRate / 2));
+  // Recurring secondary real estate market ITBI (never compounds prior months or double-counts settled ITBI)
+  const recurringMarketItbi = Math.round(newPop * 18 * (economy.itbiRate / 2));
+  const settledItbiThisMonth = Math.max(0, Math.round(economy.settledItbiThisMonth || 0));
 
-  const totalRevenue = Math.round(iptu + iss + itbi + transfers + servicesAndConcessions);
+  const recurringRevenue = Math.round(
+    iptu + iss + recurringMarketItbi + transfers + servicesAndConcessions,
+  );
+  const totalReportedRevenue = recurringRevenue + settledItbiThisMonth;
 
   const payroll = Math.round(14000 + buildingMaintenance * 0.65);
   const healthExp = Math.round((6500 + newPop * 28) * economy.budgetHealth);
@@ -642,9 +688,10 @@ export function processMonthlyCycle(params: {
   const totalExpense = Math.round(
     payroll + healthExp + eduExp + safetyExp + transitExp + socialExp + policyExp + debtInterest,
   );
-  const monthlyNet = totalRevenue - totalExpense;
+  // Only unsettled recurring revenues enter treasury at month close
+  const monthlyRecurringNet = recurringRevenue - totalExpense;
 
-  economy.treasury += monthlyNet;
+  economy.treasury += monthlyRecurringNet;
   if (economy.treasury < 0) {
     economy.debt += Math.abs(economy.treasury);
     economy.treasury = 0;
@@ -654,13 +701,14 @@ export function processMonthlyCycle(params: {
     economy.treasury -= paydown;
   }
 
-  economy.lastMonthlyRevenue = totalRevenue;
+  economy.settledItbiThisMonth = 0;
+  economy.lastMonthlyRevenue = totalReportedRevenue;
   economy.lastMonthlyExpense = totalExpense;
-  economy.lastMonthlyNet = monthlyNet;
+  economy.lastMonthlyNet = monthlyRecurringNet;
   economy.revenueBreakdown = {
     iptu,
     iss,
-    itbi,
+    itbi: recurringMarketItbi + settledItbiThisMonth,
     transfers,
     servicesAndConcessions: Math.round(servicesAndConcessions),
   };
@@ -676,10 +724,17 @@ export function processMonthlyCycle(params: {
 
   // 4. City Indicators
   const laborForce = Math.round(newPop * 0.62);
-  const employed = Math.min(laborForce, Math.max(20, Math.round(grid.jobsTotal * 0.96)));
-  const unemploymentRate = Number(
-    Math.max(2.0, Math.min(65.0, ((laborForce - employed) / Math.max(1, laborForce)) * 100)).toFixed(1),
-  );
+  const effectiveJobs = Math.max(0, grid.jobsTotal);
+  const employed =
+    effectiveJobs === 0
+      ? 0
+      : Math.min(laborForce, effectiveJobs, Math.max(0, Math.round(effectiveJobs * 0.96)));
+  const unemploymentRate =
+    laborForce <= 0
+      ? 0
+      : Number(
+          Math.max(0, Math.min(100, ((laborForce - employed) / laborForce) * 100)).toFixed(1),
+        );
   const housingDeficit = Math.max(0, newPop - grid.housingCapacity);
   const housingIndex = Math.max(10, Math.min(100, Math.round(100 - (housingDeficit / Math.max(1, newPop)) * 120)));
   const mobility = Math.max(15, Math.min(100, Math.round(100 - grid.avgTraffic * 0.65 + (economy.budgetTransit - 1) * 18)));

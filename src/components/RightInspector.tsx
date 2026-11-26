@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import {
   ArrowUpCircle,
   Camera,
+  Car,
   Gavel,
   Move,
   Trash2,
@@ -11,6 +12,7 @@ import {
 import { BUILDING_CATALOG } from '../types/game';
 import { useGameStore } from '../store/useGameStore';
 import { getTile } from '../simulation/tickEngine';
+import { getBuildingThumbnails } from '../engine/buildingThumbnails';
 
 const STATE_LABELS: Record<string, string> = {
   idle: 'Em descanso',
@@ -37,9 +39,11 @@ export const RightInspector: React.FC = () => {
   const selectedTileCoords = useGameStore((s) => s.selectedTileCoords);
   const selectedCitizenId = useGameStore((s) => s.selectedCitizenId);
   const followedCitizenId = useGameStore((s) => s.followedCitizenId);
+  const followedVehicleId = useGameStore((s) => s.followedVehicleId);
 
   const selectCitizen = useGameStore((s) => s.selectCitizen);
   const followCitizen = useGameStore((s) => s.followCitizen);
+  const followVehicle = useGameStore((s) => s.followVehicle);
   const upgradeBuilding = useGameStore((s) => s.upgradeBuilding);
   const startMoveBuilding = useGameStore((s) => s.startMoveBuilding);
   const demolishAt = useGameStore((s) => s.demolishAt);
@@ -50,17 +54,43 @@ export const RightInspector: React.FC = () => {
   const openAuction = useGameStore((s) => s.openAuction);
   const resolveLandConflict = useGameStore((s) => s.resolveLandConflict);
 
+  const thumbnails = useMemo(() => getBuildingThumbnails(), []);
+
   if (zenMode) return null;
 
   const citizen = selectedCitizenId ? citizens.find((c) => c.id === selectedCitizenId) : null;
   const tile = selectedTileCoords ? getTile(tiles, selectedTileCoords.x, selectedTileCoords.z) : null;
 
-  if (!citizen && !tile) return null;
+  if (!citizen && !tile && !followedVehicleId) return null;
 
   return (
-    <aside className="fixed top-14 right-3 bottom-12 z-20 w-80 pointer-events-none flex flex-col justify-start">
+    <aside className="fixed top-12 right-3 bottom-48 z-20 w-80 pointer-events-none flex flex-col justify-start">
       <div className="pointer-events-auto max-h-full bg-slate-950/94 border border-slate-800 rounded-lg shadow-2xl flex flex-col overflow-hidden">
-        {citizen ? (
+        {followedVehicleId && !citizen && !tile ? (
+          <div className="p-3.5 space-y-2.5 text-xs">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Car className="w-4 h-4 text-sky-400" />
+                <span className="font-display font-semibold text-white">Câmera em Trânsito</span>
+              </div>
+              <button
+                onClick={() => followVehicle(null)}
+                className="text-slate-400 hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-slate-400">
+              Acompanhando veículo em circulação pelas vias da cidade em tempo real.
+            </p>
+            <button
+              onClick={() => followVehicle(null)}
+              className="w-full py-1.5 rounded bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold"
+            >
+              Sair do Acompanhamento (Esc)
+            </button>
+          </div>
+        ) : citizen ? (
           <>
             <div className="px-3.5 py-2.5 border-b border-slate-800 flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -185,7 +215,6 @@ export const RightInspector: React.FC = () => {
             </div>
 
             <div className="p-3.5 overflow-y-auto hud-scroll space-y-3 text-xs">
-              {/* Tile Land Info */}
               <div className="bg-slate-900 border border-slate-800 rounded p-2.5 space-y-1.5">
                 <div className="flex justify-between">
                   <span className="text-slate-400">Geografia:</span>
@@ -215,28 +244,44 @@ export const RightInspector: React.FC = () => {
                 </div>
               </div>
 
-              {/* Building Details */}
               {tile.building && (
                 <div className="bg-slate-900 border border-slate-800 rounded p-2.5 space-y-2">
                   {(() => {
                     const b = tile.building!;
                     const def = BUILDING_CATALOG[b.type];
                     const upgradeCost = Math.round(def.cost * 0.75 * b.level);
+                    const thumb = thumbnails[b.type];
                     return (
                       <>
-                        <div className="flex items-center justify-between">
-                          <span className="font-semibold text-white">{def.name}</span>
-                          <span className="font-mono-num text-amber-400">Nível {b.level}/3</span>
-                        </div>
-                        <div className="text-[11px] text-slate-400">
-                          {b.powered && b.watered && b.connectedRoad
-                            ? 'Operando normalmente'
-                            : `Pendências: ${!b.powered ? 'Energia ' : ''}${!b.watered ? 'Água ' : ''}${!b.connectedRoad ? 'Via' : ''}`}
+                        <div className="flex items-center gap-2.5">
+                          {thumb && (
+                            <img
+                              src={thumb}
+                              alt={def.name}
+                              className="w-11 h-11 rounded bg-slate-950 border border-slate-800 shrink-0 object-contain"
+                            />
+                          )}
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="font-semibold text-white truncate">{def.name}</span>
+                              <span className="font-mono-num text-amber-400 shrink-0">
+                                Nv.{b.level}/3
+                              </span>
+                            </div>
+                            <div className="text-[11px] text-slate-400 mt-0.5">
+                              {b.powered && b.watered && b.connectedRoad
+                                ? 'Operando normalmente'
+                                : `Pendências: ${!b.powered ? 'Energia ' : ''}${!b.watered ? 'Água ' : ''}${!b.connectedRoad ? 'Via' : ''}`}
+                            </div>
+                          </div>
                         </div>
                         <div className="flex justify-between text-[11px]">
-                          <span>Capacidade:</span>
+                          <span className="text-slate-400">Conservação / Capacidade:</span>
                           <span className="font-mono-num text-slate-200">
-                            {def.housingCapacity > 0 ? `${def.housingCapacity} moradias` : `${def.jobsProvided} vagas`}
+                            {Math.round(b.condition)}% ·{' '}
+                            {def.housingCapacity > 0
+                              ? `${def.housingCapacity} moradias`
+                              : `${def.jobsProvided} vagas`}
                           </span>
                         </div>
                         <div className="grid grid-cols-3 gap-1.5 pt-1">
@@ -269,7 +314,6 @@ export const RightInspector: React.FC = () => {
                 </div>
               )}
 
-              {/* Land Conflict Resolution */}
               {tile.conflict && (
                 <div className="bg-amber-950/60 border border-amber-700 rounded p-2.5 space-y-2">
                   <div className="font-semibold text-amber-300">{tile.conflict.title}</div>
@@ -299,43 +343,53 @@ export const RightInspector: React.FC = () => {
                 </div>
               )}
 
-              {/* Banco Imobiliário Actions */}
               {!tile.building && tile.road === 'none' && !tile.conflict && (
                 <div className="bg-slate-900 border border-slate-800 rounded p-2.5 space-y-1.5">
                   <div className="font-semibold text-slate-200">Operações Imobiliárias</div>
                   {tile.ownerType !== 'public' ? (
                     <button
+                      disabled={tile.ownerType === 'occupied'}
                       onClick={() => buyLand(tile.x, tile.z)}
-                      className="w-full py-1.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-medium"
+                      className="w-full py-1.5 rounded bg-emerald-600 hover:bg-emerald-500 disabled:opacity-45 text-white font-medium"
                     >
                       Comprar Terreno (R$ {tile.landValue.toLocaleString('pt-BR')})
                     </button>
+                  ) : tile.terrain === 'waterfront' ? (
+                    <div className="text-[11px] text-slate-400 py-1">
+                      Área de orla preservada como patrimônio público e lazer.
+                    </div>
                   ) : (
                     <>
                       <button
+                        disabled={tile.concessionActive}
                         onClick={() => sellLand(tile.x, tile.z)}
-                        className="w-full py-1.5 rounded bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold"
+                        className="w-full py-1.5 rounded bg-amber-500 hover:bg-amber-400 disabled:opacity-45 text-slate-950 font-semibold"
                       >
                         Vender Lote (+R$ {Math.round(tile.landValue * 1.15).toLocaleString('pt-BR')})
                       </button>
                       <button
+                        disabled={tile.concessionActive}
                         onClick={() => openAuction(tile.x, tile.z)}
-                        className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded bg-sky-600 hover:bg-sky-500 text-white font-medium"
+                        className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded bg-sky-600 hover:bg-sky-500 disabled:opacity-45 text-white font-medium"
                       >
                         <Gavel className="w-3.5 h-3.5" />
                         <span>Realizar Leilão Imobiliário</span>
                       </button>
                       <button
+                        disabled={tile.concessionActive}
                         onClick={() => grantConcession(tile.x, tile.z)}
-                        className="w-full py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium"
+                        className="w-full py-1.5 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-45 text-slate-200 font-medium"
                       >
-                        Conceder p/ Empreendimento (+R$ {Math.round(tile.landValue * 0.45).toLocaleString('pt-BR')})
+                        {tile.concessionActive
+                          ? 'Concessão Ativa'
+                          : `Conceder p/ Empreendimento (+R$ ${Math.round(tile.landValue * 0.45).toLocaleString('pt-BR')})`}
                       </button>
                     </>
                   )}
                   <button
+                    disabled={tile.plannedDistrict}
                     onClick={() => togglePlannedDistrict(tile.x, tile.z)}
-                    className="w-full py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium"
+                    className="w-full py-1.5 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-55 text-slate-200 font-medium"
                   >
                     {tile.plannedDistrict ? 'Setor Bairro Planejado Ativo' : 'Declarar Bairro Planejado (R$ 25.000)'}
                   </button>

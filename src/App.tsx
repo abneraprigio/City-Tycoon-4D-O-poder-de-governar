@@ -3,6 +3,7 @@ import { CityViewport } from './engine/CityViewport';
 import { TopBar } from './components/TopBar';
 import { LeftDock } from './components/LeftDock';
 import { RightInspector } from './components/RightInspector';
+import { BottomBuildDock } from './components/BottomBuildDock';
 import { BottomTicker } from './components/BottomTicker';
 import { GameModals } from './components/Modals';
 
@@ -19,6 +20,7 @@ export default function App() {
         <TopBar />
         <LeftDock />
         <RightInspector />
+        <BottomBuildDock />
         <BottomTicker />
         <GameModals />
       </main>

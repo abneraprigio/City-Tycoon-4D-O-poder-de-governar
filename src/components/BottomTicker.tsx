@@ -1,7 +1,8 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   AlertTriangle,
   Compass,
+  Map,
   Move,
   Newspaper,
   RotateCcw,
@@ -10,8 +11,11 @@ import {
   ZoomOut,
 } from 'lucide-react';
 import { useGameStore } from '../store/useGameStore';
+import { CityMinimap } from './CityMinimap';
 
 export const BottomTicker: React.FC = () => {
+  const [showMinimap, setShowMinimap] = useState(true);
+
   const news = useGameStore((s) => s.news);
   const indicators = useGameStore((s) => s.indicators);
   const impeachment = useGameStore((s) => s.politics.impeachment);
@@ -48,10 +52,17 @@ export const BottomTicker: React.FC = () => {
 
   return (
     <>
+      {/* Interactive 2D Tactical Minimap (bottom-right above footer) */}
+      {showMinimap && (
+        <div className="fixed bottom-12 right-3 z-20 pointer-events-auto hidden md:block">
+          <CityMinimap />
+        </div>
+      )}
+
       {/* Toast Feedback Banner */}
       {toast && (
         <div
-          className={`fixed bottom-14 left-1/2 -translate-x-1/2 z-30 px-4 py-2 rounded-lg border text-xs font-medium shadow-lg pointer-events-auto ${
+          className={`fixed top-12 right-1/2 translate-x-1/2 z-30 px-4 py-2 rounded-lg border text-xs font-medium shadow-lg pointer-events-auto ${
             toast.tone === 'error'
               ? 'bg-rose-950/95 border-rose-700 text-rose-200'
               : toast.tone === 'warning'
@@ -67,9 +78,9 @@ export const BottomTicker: React.FC = () => {
 
       {/* Active Build / Tool Hint */}
       {activeTool !== 'select' && (
-        <div className="fixed top-14 left-1/2 -translate-x-1/2 z-20 flex items-center gap-3 px-3.5 py-1.5 rounded-lg bg-slate-950/92 border border-amber-500/60 text-xs text-slate-100 pointer-events-auto">
+        <div className="fixed top-12 left-1/2 -translate-x-1/2 z-20 flex items-center gap-3 px-3.5 py-1.5 rounded-lg bg-slate-950/94 border border-amber-500/60 text-xs text-slate-100 pointer-events-auto shadow-lg">
           <span>
-            Modo:{' '}
+            Ferramenta:{' '}
             <strong className="text-amber-400">
               {activeTool === 'build'
                 ? `Construir (${selectedBuildType})`
@@ -100,7 +111,7 @@ export const BottomTicker: React.FC = () => {
       )}
 
       {/* Bottom Compact Strategy Bar */}
-      <footer className="fixed bottom-0 left-0 right-0 z-20 pointer-events-auto bg-slate-950/92 border-t border-slate-800 px-4 py-1.5 flex items-center justify-between gap-4 text-xs">
+      <footer className="fixed bottom-0 left-0 right-0 z-20 pointer-events-auto bg-slate-950/94 border-t border-slate-800 px-3.5 py-1.5 flex items-center justify-between gap-3 text-xs">
         {/* Cidade News Headline */}
         <button
           onClick={() => setShowNewspaperModal(true)}
@@ -114,20 +125,31 @@ export const BottomTicker: React.FC = () => {
         </button>
 
         {/* Population Demands & Alerts */}
-        <div className="hidden lg:flex items-center gap-2 shrink-0 text-slate-300">
+        <div className="hidden xl:flex items-center gap-2 shrink-0 text-slate-300">
           {demands.length > 0 ? (
             <>
               <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
               <span className="text-amber-200 truncate max-w-sm">{demands.join(' · ')}</span>
             </>
           ) : (
-            <span className="text-emerald-400">Serviços urbanos operando em equilíbrio</span>
+            <span className="text-emerald-400">Serviços urbanos em equilíbrio</span>
           )}
         </div>
 
-        {/* Camera Navigation Controls */}
+        {/* Camera Navigation & Minimap Toggle */}
         <div className="flex items-center gap-1 shrink-0">
-          <span className="hidden sm:inline text-slate-500 mr-1.5">WASD mover · Arraste girar</span>
+          <button
+            onClick={() => setShowMinimap((v) => !v)}
+            title="Exibir/Ocultar Minimapa Tático"
+            className={`hidden md:inline-flex items-center gap-1 px-2 py-1 rounded border text-[11px] transition-colors ${
+              showMinimap
+                ? 'bg-sky-600/25 border-sky-500/60 text-sky-300'
+                : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
+            }`}
+          >
+            <Map className="w-3 h-3" />
+            <span>Mapa</span>
+          </button>
           <button
             onClick={() => sendCameraCommand({ type: 'rotate_left' })}
             title="Girar câmera à esquerda"
@@ -159,9 +181,9 @@ export const BottomTicker: React.FC = () => {
           <button
             onClick={() => sendCameraCommand({ type: 'tilt_up' })}
             title="Elevar ângulo"
-            className="px-2 py-1 rounded bg-slate-900 border border-slate-800 hover:border-slate-600 text-slate-300 hover:text-white"
+            className="hidden sm:inline-flex items-center px-2 py-1 rounded bg-slate-900 border border-slate-800 hover:border-slate-600 text-slate-300 hover:text-white"
           >
-            <Move className="w-3 h-3 inline mr-1" />
+            <Move className="w-3 h-3 mr-1" />
             Ângulo+
           </button>
           <button
