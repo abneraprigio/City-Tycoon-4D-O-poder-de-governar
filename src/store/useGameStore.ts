@@ -329,6 +329,7 @@ export interface GameState {
   toast: ToastNotice | null;
   gridVersion: number; // increments when 3D tile meshes need sync
   thematicVersion: number; // increments when thematic tile colors need sync
+  simAlpha: number; // 0..1 interpolation alpha for 60 FPS visual smoothing
   simStats: CitySimulationStats;
 
   // Actions
@@ -1354,6 +1355,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     : null,
   gridVersion: 1,
   thematicVersion: 1,
+  simAlpha: 0,
 
   showToast: (text, tone = 'info') => {
     set({ toast: { id: `${Date.now()}_${Math.random()}`, text, tone } });
@@ -1689,17 +1691,24 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (state.speed === 0 || state.endGameReport || state.activeEvent || dtSeconds <= 0) return;
 
     const tStart = typeof performance !== 'undefined' ? performance.now() : Date.now();
-    navCache.ensureFresh(state.tiles, state.gridVersion);
+    navCache.ensureFresh(state.tiles, state.gridVersion, state.citizens, trafficSystemRuntime.vehicles);
 
-    // Fixed-timestep simulation accumulation (20 Hz deterministic steps)
+    // Fixed-timestep simulation accumulation (20 Hz deterministic steps + alpha interpolation)
     const clockStep = simClock.step(dtSeconds, state.speed, state.timeConfig);
-    if (clockStep.fixedSteps === 0) return;
+    if (clockStep.fixedSteps === 0) {
+      if (Math.abs(clockStep.alpha - state.simAlpha) > 0.005) {
+        set({ simAlpha: clockStep.alpha });
+      }
+      return;
+    }
 
     const calendarHoursDelta = clockStep.calendarHoursDelta;
-    const physicalDt = clockStep.physicalDt;
+    const stepCalendarHours = calendarHoursDelta / clockStep.fixedSteps;
+    const stepPhysicalDt = FIXED_SIM_DT * clockStep.physicalScale;
+    const totalPhysicalDt = clockStep.physicalDt;
     const calendarSimSeconds = clockStep.fixedSteps * FIXED_SIM_DT * state.speed;
 
-    const dueChannels = simScheduler.advance(physicalDt);
+    const dueChannels = simScheduler.advance(totalPhysicalDt);
     const runNeedsAndStructure = dueChannels.has('needs');
 
     const safeSecondsPerDay = clampNum(state.timeConfig.secondsPerDay || 180, 60, 300);
@@ -1713,37 +1722,70 @@ export const useGameStore = create<GameState>((set, get) => ({
       state.timeConfig.creativeInstantBuild,
     );
 
-    // 2. Intelligent NPC ecosystem
+    // 2. Fixed-step NPC ecosystem & road traffic (snapshotting prev coordinates before final step for interpolation)
     const nextCitizens = state.citizens;
-    const ecoStep = stepCitizenEcosystem({
-      tiles: state.tiles,
-      citizens: nextCitizens,
-      households: state.households,
-      workplaces: state.workplaces,
-      navCache,
-      hourOfDay: newHour,
-      day: state.day,
-      year: state.year,
-      physicalDt,
-      calendarHoursDelta,
-      timeConfig: state.timeConfig,
-      indicators: state.indicators,
-      economy: state.economy,
-      batchCursor: citizenBatchCursor,
-      runNeedsAndStructure,
-      vehicles: trafficSystemRuntime.vehicles,
-    });
-    citizenBatchCursor = ecoStep.nextBatchCursor;
+    let ecoHouseholds = state.households;
+    let ecoWorkplaces = state.workplaces;
 
-    // 3. Purposeful road traffic, signals, transit buses & emergency dispatches
-    stepTrafficEngine(
-      trafficSystemRuntime,
-      state.tiles,
-      nextCitizens,
-      navCache,
-      physicalDt,
-      state.timeConfig,
-    );
+    for (let step = 0; step < clockStep.fixedSteps; step++) {
+      for (let i = 0; i < nextCitizens.length; i++) {
+        const c = nextCitizens[i];
+        c.prevX = c.x;
+        c.prevZ = c.z;
+        c.prevYaw = c.yaw;
+      }
+      for (let i = 0; i < trafficSystemRuntime.vehicles.length; i++) {
+        const v = trafficSystemRuntime.vehicles[i];
+        v.prevX = v.x;
+        v.prevZ = v.z;
+        v.prevYaw = v.yaw;
+      }
+
+      const stepHour = (state.hourOfDay + stepCalendarHours * (step + 1)) % 24;
+      const ecoStep = stepCitizenEcosystem({
+        tiles: state.tiles,
+        citizens: nextCitizens,
+        households: ecoHouseholds,
+        workplaces: ecoWorkplaces,
+        navCache,
+        hourOfDay: stepHour,
+        day: state.day,
+        year: state.year,
+        physicalDt: stepPhysicalDt,
+        calendarHoursDelta: stepCalendarHours,
+        timeConfig: state.timeConfig,
+        indicators: state.indicators,
+        economy: state.economy,
+        batchCursor: citizenBatchCursor,
+        runNeedsAndStructure: runNeedsAndStructure && step === 0,
+        vehicles: trafficSystemRuntime.vehicles,
+      });
+      ecoHouseholds = ecoStep.households;
+      ecoWorkplaces = ecoStep.workplaces;
+      citizenBatchCursor = ecoStep.nextBatchCursor;
+
+      stepTrafficEngine(
+        trafficSystemRuntime,
+        state.tiles,
+        nextCitizens,
+        navCache,
+        stepPhysicalDt,
+        state.timeConfig,
+      );
+    }
+
+    let nextIndicators = state.indicators;
+    if (runNeedsAndStructure) {
+      const unmetCounts = { health: 0, education: 0, food: 0, work: 0, housing: 0, leisure: 0 };
+      for (let i = 0; i < nextCitizens.length; i++) {
+        const u = nextCitizens[i].unmetDemandCategory;
+        if (u) unmetCounts[u] += 1;
+      }
+      nextIndicators = {
+        ...state.indicators,
+        unmetNeeds: unmetCounts,
+      };
+    }
 
     const tEnd = typeof performance !== 'undefined' ? performance.now() : Date.now();
     const simStepMs = Number((tEnd - tStart).toFixed(2));
@@ -1771,8 +1813,10 @@ export const useGameStore = create<GameState>((set, get) => ({
       set((s) => ({
         dayAccumulator: newAcc,
         hourOfDay: newHour,
-        households: ecoStep.households,
-        workplaces: ecoStep.workplaces,
+        simAlpha: clockStep.alpha,
+        indicators: nextIndicators,
+        households: ecoHouseholds,
+        workplaces: ecoWorkplaces,
         trafficSignals: trafficSystemRuntime.signals,
         transitLines: trafficSystemRuntime.transitLines,
         vehicles: trafficSystemRuntime.vehicles,
@@ -1793,8 +1837,10 @@ export const useGameStore = create<GameState>((set, get) => ({
         day,
         dayAccumulator: newAcc,
         hourOfDay: newHour,
-        households: ecoStep.households,
-        workplaces: ecoStep.workplaces,
+        simAlpha: clockStep.alpha,
+        indicators: nextIndicators,
+        households: ecoHouseholds,
+        workplaces: ecoWorkplaces,
         trafficSignals: trafficSystemRuntime.signals,
         transitLines: trafficSystemRuntime.transitLines,
         vehicles: trafficSystemRuntime.vehicles,
@@ -1817,7 +1863,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     const result = processMonthlyCycle({
       tiles: state.tiles,
       economy: state.economy,
-      indicators: state.indicators,
+      indicators: nextIndicators,
       politics: state.politics,
       citizens: nextCitizens,
       achievements: state.achievements,
@@ -1830,7 +1876,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       hadDebtBefore,
     });
 
-    const reconciledHouseholds = reconcileHouseholds(result.tiles, result.citizens, ecoStep.households);
+    const reconciledHouseholds = reconcileHouseholds(result.tiles, result.citizens, ecoHouseholds);
     const reconciledWorkplaces = reconcileWorkplaces(result.tiles, result.citizens);
     const updatedNews = [...result.newsToAdd, ...state.news].slice(0, 40);
 

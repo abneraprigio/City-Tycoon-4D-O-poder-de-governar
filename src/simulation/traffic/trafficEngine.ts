@@ -9,6 +9,7 @@ import {
 } from '../../types/game';
 import { tileKey } from '../navigation/obstacleSystem';
 import { UrbanNavigationCache } from '../navigation/routeCache';
+import { WORLD_SCALE } from '../worldScale';
 import { buildTransitLines, stepPublicTransport } from './publicTransport';
 import { getSignalAspectForDirection, reconcileTrafficSignals, stepTrafficSignals } from './trafficSignals';
 import { dispatchEmergencyIfNeeded, spawnPurposefulVehicle } from './vehicleRoutes';
@@ -62,11 +63,11 @@ export function stepTrafficEngine(
   stepTrafficSignals(state.signals, physicalDt);
   const signalMap = new Map(state.signals.map((s) => [s.tileKey, s]));
 
-  // Target active vehicle pool based on road tiles & user trafficIntensity setting
+  // Target active vehicle pool: moderate, realistic Pilot Neighborhood & city flow
   const roadCount = roadGraph.nodes.size;
   const desiredCount = Math.min(
-    34,
-    Math.max(4, Math.round((roadCount * 0.28 + citizens.length * 0.16) * timeConfig.trafficIntensity)),
+    26,
+    Math.max(4, Math.round((roadCount * 0.22 + citizens.length * 0.1) * timeConfig.trafficIntensity)),
   );
 
   // Maintain bus line & spawn purposeful vehicles up to desiredCount
@@ -230,10 +231,10 @@ export function stepTrafficEngine(
     v.waitingForCrosswalk = mustYieldPed;
     v.braking = mustStopSignal || mustYieldPed || mustBrakeAhead;
 
-    const roadLimit = nextNode?.speedLimit ?? 1.15;
+    const roadLimit = nextNode?.speedLimit ?? WORLD_SCALE.vehicleSpeedsTile.ruaLimit;
     const targetSpeed = v.braking ? 0 : Math.min(v.maxSpeed, roadLimit);
 
-    const accel = v.braking ? 2.6 : 1.3;
+    const accel = v.braking ? 1.85 : 0.95;
     if (v.speed < targetSpeed) {
       v.speed = Math.min(targetSpeed, v.speed + accel * physicalDt);
     } else {

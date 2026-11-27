@@ -72,6 +72,14 @@ function connectNodes(
     if (!clear) return;
   }
 
+  // Validate crosswalk segments against poles/signals/buildings (never clip into furniture/walls)
+  if (isCrosswalk && tiles && registry) {
+    const clear = hasLineOfSight(registry, tiles, a.x, a.z, b.x, b.z, 0.036, {
+      allowedBuildingId,
+    });
+    if (!clear) return;
+  }
+
   const dist = Math.hypot(a.x - b.x, a.z - b.z) * costMultiplier;
   if (!a.edges.some((e) => e.to === bId)) {
     a.edges.push({ to: bId, cost: dist, isCrosswalk });
@@ -84,7 +92,7 @@ function connectNodes(
 /**
  * Builds an urban pedestrian graph derived from rendered sidewalks, crosswalks,
  * plaza walkways around fountains/benches, and front entrances.
- * Every non-crosswalk edge is validated against UrbanWorldRegistry via hasLineOfSight.
+ * Every edge (including crosswalks) is validated against UrbanWorldRegistry via hasLineOfSight.
  */
 export function buildPedestrianGraph(
   tiles: TileData[],
@@ -97,6 +105,17 @@ export function buildPedestrianGraph(
     buildingEntranceNode: new Map(),
     tileNodes: new Map(),
     crosswalkSegments: [],
+  };
+
+  const tryAddCrosswalk = (tileX: number, tileZ: number, nAId: string, nBId: string) => {
+    const a = graph.nodes.get(nAId);
+    const b = graph.nodes.get(nBId);
+    if (!a || !b) return;
+    if (!hasLineOfSight(registry, tiles, a.x, a.z, b.x, b.z, 0.036)) return;
+    connectNodes(graph, nAId, nBId, 1.7, true, tiles, registry);
+    if (a.edges.some((e) => e.to === nBId)) {
+      graph.crosswalkSegments.push({ ax: a.x, az: a.z, bx: b.x, bz: b.z, tileX, tileZ });
+    }
   };
 
   // 1. Road sidewalk corner nodes & intra-tile sidewalk edges
@@ -128,30 +147,18 @@ export function buildPedestrianGraph(
     if (!westRoad) connectNodes(graph, nw, sw, 1.0, false, tiles, registry);
     if (!eastRoad) connectNodes(graph, ne, se, 1.0, false, tiles, registry);
 
-    // Crosswalks across street at intersections OR straight stretches every 2 tiles
+    // Crosswalks across street at intersections OR straight stretches every 2 tiles (validated against poles/furniture)
     if (northRoad || isIntersection || (!northRoad && !southRoad && (x + z) % 2 === 0)) {
-      connectNodes(graph, nw, ne, 1.7, true);
-      const a = graph.nodes.get(nw)!;
-      const b = graph.nodes.get(ne)!;
-      graph.crosswalkSegments.push({ ax: a.x, az: a.z, bx: b.x, bz: b.z, tileX: x, tileZ: z });
+      tryAddCrosswalk(x, z, nw, ne);
     }
     if (southRoad || isIntersection) {
-      connectNodes(graph, sw, se, 1.7, true);
-      const a = graph.nodes.get(sw)!;
-      const b = graph.nodes.get(se)!;
-      graph.crosswalkSegments.push({ ax: a.x, az: a.z, bx: b.x, bz: b.z, tileX: x, tileZ: z });
+      tryAddCrosswalk(x, z, sw, se);
     }
     if (westRoad || isIntersection || (!westRoad && !eastRoad && (x + z) % 2 === 0)) {
-      connectNodes(graph, nw, sw, 1.7, true);
-      const a = graph.nodes.get(nw)!;
-      const b = graph.nodes.get(sw)!;
-      graph.crosswalkSegments.push({ ax: a.x, az: a.z, bx: b.x, bz: b.z, tileX: x, tileZ: z });
+      tryAddCrosswalk(x, z, nw, sw);
     }
     if (eastRoad || isIntersection) {
-      connectNodes(graph, ne, se, 1.7, true);
-      const a = graph.nodes.get(ne)!;
-      const b = graph.nodes.get(se)!;
-      graph.crosswalkSegments.push({ ax: a.x, az: a.z, bx: b.x, bz: b.z, tileX: x, tileZ: z });
+      tryAddCrosswalk(x, z, ne, se);
     }
   }
 

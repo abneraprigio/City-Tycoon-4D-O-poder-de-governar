@@ -78,19 +78,35 @@ export interface CollisionMarker {
   timestamp: number;
 }
 
+export interface DoorCorridorSpec {
+  localCenterX: number;
+  halfW: number;
+  minLocalZ: number;
+  maxLocalZ: number;
+}
+
+export interface DoorCorridorInstance {
+  buildingId: string;
+  tileX: number;
+  tileZ: number;
+  rotationRad: number;
+  corridor: DoorCorridorSpec;
+}
+
 export interface UrbanWorldRegistry {
   objects: UrbanWorldObject[];
   spatialBuckets: Map<string, UrbanWorldObject[]>;
   interactionSpots: InteractionSpot[];
   spotById: Map<string, InteractionSpot>;
   spotsByBuildingId: Map<string, InteractionSpot[]>;
+  doorCorridorsByBuildingId: Map<string, DoorCorridorInstance>;
   collisionHits: number;
   recentCollisions: CollisionMarker[];
 }
 
 export interface CollisionQueryOptions {
   allowedBuildingId?: string | null;
-  allowDirectCenterEntry?: boolean;
+  allowedBenchBuildingId?: string | null;
   ignoreWalkable?: boolean;
 }
 
@@ -170,6 +186,8 @@ interface BuildingColliderSpec {
   bodyCenterZ: number;
   bodyHalfW: number;
   bodyHalfD: number;
+  doorLocalX?: number;
+  doorHalfW?: number;
   hasPerimeterFence?: boolean;
   fenceHalfSpan?: number;
 }
@@ -182,6 +200,8 @@ function getBuildingColliderSpec(type: BuildingTypeId): BuildingColliderSpec {
         bodyCenterZ: -0.04,
         bodyHalfW: 0.28,
         bodyHalfD: 0.25,
+        doorLocalX: 0,
+        doorHalfW: 0.14,
         hasPerimeterFence: true,
         fenceHalfSpan: 0.405,
       };
@@ -191,6 +211,8 @@ function getBuildingColliderSpec(type: BuildingTypeId): BuildingColliderSpec {
         bodyCenterZ: -0.02,
         bodyHalfW: 0.36,
         bodyHalfD: 0.28,
+        doorLocalX: 0,
+        doorHalfW: 0.14,
         hasPerimeterFence: true,
         fenceHalfSpan: 0.435,
       };
@@ -200,6 +222,8 @@ function getBuildingColliderSpec(type: BuildingTypeId): BuildingColliderSpec {
         bodyCenterZ: -0.06,
         bodyHalfW: 0.39,
         bodyHalfD: 0.31,
+        doorLocalX: 0,
+        doorHalfW: 0.14,
         hasPerimeterFence: true,
         fenceHalfSpan: 0.45,
       };
@@ -209,28 +233,54 @@ function getBuildingColliderSpec(type: BuildingTypeId): BuildingColliderSpec {
         bodyCenterZ: 0,
         bodyHalfW: 0.42,
         bodyHalfD: 0.42,
+        doorLocalX: 0,
+        doorHalfW: 0.16,
       };
     case 'padaria':
       return {
         bodyCenterX: 0,
-        bodyCenterZ: -0.03,
+        bodyCenterZ: -0.04,
         bodyHalfW: 0.34,
-        bodyHalfD: 0.29,
+        bodyHalfD: 0.28,
+        doorLocalX: 0.04,
+        doorHalfW: 0.16,
       };
     case 'restaurante':
       return {
         bodyCenterX: 0,
-        bodyCenterZ: -0.1,
+        bodyCenterZ: -0.11,
         bodyHalfW: 0.35,
-        bodyHalfD: 0.25,
+        bodyHalfD: 0.24,
+        doorLocalX: 0,
+        doorHalfW: 0.15,
       };
     case 'mercado':
     case 'loja':
       return {
         bodyCenterX: 0,
-        bodyCenterZ: -0.03,
+        bodyCenterZ: -0.04,
         bodyHalfW: 0.39,
-        bodyHalfD: 0.34,
+        bodyHalfD: 0.33,
+        doorLocalX: 0,
+        doorHalfW: 0.16,
+      };
+    case 'escola':
+      return {
+        bodyCenterX: 0,
+        bodyCenterZ: -0.02,
+        bodyHalfW: 0.42,
+        bodyHalfD: 0.39,
+        doorLocalX: 0,
+        doorHalfW: 0.16,
+      };
+    case 'prefeitura':
+      return {
+        bodyCenterX: 0,
+        bodyCenterZ: -0.04,
+        bodyHalfW: 0.39,
+        bodyHalfD: 0.3,
+        doorLocalX: 0,
+        doorHalfW: 0.16,
       };
     case 'shopping':
     case 'estadio':
@@ -240,6 +290,8 @@ function getBuildingColliderSpec(type: BuildingTypeId): BuildingColliderSpec {
         bodyCenterZ: 0,
         bodyHalfW: 0.45,
         bodyHalfD: 0.44,
+        doorLocalX: 0,
+        doorHalfW: 0.18,
       };
     case 'rede_energia':
     case 'saneamento':
@@ -248,6 +300,8 @@ function getBuildingColliderSpec(type: BuildingTypeId): BuildingColliderSpec {
         bodyCenterZ: 0,
         bodyHalfW: 0.36,
         bodyHalfD: 0.36,
+        doorLocalX: 0,
+        doorHalfW: 0.13,
         hasPerimeterFence: true,
         fenceHalfSpan: 0.43,
       };
@@ -257,6 +311,8 @@ function getBuildingColliderSpec(type: BuildingTypeId): BuildingColliderSpec {
         bodyCenterZ: 0,
         bodyHalfW: 0.38,
         bodyHalfD: 0.36,
+        doorLocalX: 0,
+        doorHalfW: 0.15,
       };
   }
 }
@@ -268,6 +324,7 @@ export function buildUrbanWorldRegistry(tiles: TileData[]): UrbanWorldRegistry {
     interactionSpots: [],
     spotById: new Map(),
     spotsByBuildingId: new Map(),
+    doorCorridorsByBuildingId: new Map(),
     collisionHits: 0,
     recentCollisions: [],
   };
@@ -476,7 +533,7 @@ export function buildUrbanWorldRegistry(tiles: TileData[]): UrbanWorldRegistry {
     });
 
     if (b.type === 'praca') {
-      // Central fountain (circle)
+      // Central fountain (circle matching 0.38u diameter -> 0.095 tiles radius)
       addObjectToBuckets(registry, {
         id: `fountain_${b.id}`,
         kind: 'fountain',
@@ -487,9 +544,9 @@ export function buildUrbanWorldRegistry(tiles: TileData[]): UrbanWorldRegistry {
         z: tile.z,
         rotationRad: 0,
         shape: 'circle',
-        halfW: 0.11,
-        halfD: 0.11,
-        radius: 0.11,
+        halfW: 0.095,
+        halfD: 0.095,
+        radius: 0.095,
         walkable: false,
         buildingId: b.id,
         buildingType: b.type,
@@ -497,11 +554,12 @@ export function buildUrbanWorldRegistry(tiles: TileData[]): UrbanWorldRegistry {
       });
 
       // 4 park benches matching buildingModels.ts at local (0, ±0.5u) & (±0.5u, 0)
+      // Approach stands in front of bench planks on plaza stone ring (away from backrest)
       const benchDefs = [
-        { lx: 0, lz: 0.25, localRy: 0, ax: 0, az: 0.34, faceYaw: Math.PI },
-        { lx: 0, lz: -0.25, localRy: Math.PI, ax: 0, az: -0.34, faceYaw: 0 },
-        { lx: 0.25, lz: 0, localRy: Math.PI / 2, ax: 0.34, az: 0, faceYaw: -Math.PI / 2 },
-        { lx: -0.25, lz: 0, localRy: -Math.PI / 2, ax: -0.34, az: 0, faceYaw: Math.PI / 2 },
+        { lx: 0, lz: 0.25, localRy: 0, ax: 0, az: 0.16, faceYaw: Math.PI },
+        { lx: 0, lz: -0.25, localRy: Math.PI, ax: 0, az: -0.16, faceYaw: 0 },
+        { lx: 0.25, lz: 0, localRy: Math.PI / 2, ax: 0.16, az: 0, faceYaw: -Math.PI / 2 },
+        { lx: -0.25, lz: 0, localRy: -Math.PI / 2, ax: -0.16, az: 0, faceYaw: Math.PI / 2 },
       ];
       benchDefs.forEach((bd, idx) => {
         const [ox, oz] = rotateLocalOffsetRad(bd.lx, bd.lz, rotRad);
@@ -518,9 +576,9 @@ export function buildUrbanWorldRegistry(tiles: TileData[]): UrbanWorldRegistry {
           z: bz,
           rotationRad: rotRad + bd.localRy,
           shape: 'box',
-          halfW: 0.068,
-          halfD: 0.032,
-          radius: 0.075,
+          halfW: 0.065,
+          halfD: 0.026,
+          radius: 0.07,
           walkable: false,
           buildingId: b.id,
           buildingType: b.type,
@@ -541,6 +599,32 @@ export function buildUrbanWorldRegistry(tiles: TileData[]): UrbanWorldRegistry {
         });
       });
 
+      // Plaza flowerbeds (matching buildingModels.ts lines 1038-1039)
+      for (const [flx, flz] of [
+        [-0.275, 0.12],
+        [0.275, -0.12],
+      ]) {
+        const [ox, oz] = rotateLocalOffsetRad(flx, flz, rotRad);
+        addObjectToBuckets(registry, {
+          id: `hedge_${b.id}_${flx}_${flz}`,
+          kind: 'hedge',
+          category: 'vegetation',
+          tileX: tile.x,
+          tileZ: tile.z,
+          x: tile.x + ox,
+          z: tile.z + oz,
+          rotationRad: rotRad,
+          shape: 'box',
+          halfW: 0.055,
+          halfD: 0.032,
+          radius: 0.064,
+          walkable: false,
+          buildingId: b.id,
+          buildingType: b.type,
+          label: 'Canteiro da Praça',
+        });
+      }
+
       // 4 plaza corner trees matching buildingModels.ts at (±0.6u, ±0.6u) -> (±0.30, ±0.30)
       for (const [tlx, tlz] of [
         [-0.3, -0.3],
@@ -559,9 +643,9 @@ export function buildUrbanWorldRegistry(tiles: TileData[]): UrbanWorldRegistry {
           z: tile.z + oz,
           rotationRad: 0,
           shape: 'circle',
-          halfW: 0.042,
-          halfD: 0.042,
-          radius: 0.042,
+          halfW: 0.045,
+          halfD: 0.045,
+          radius: 0.045,
           walkable: false,
           buildingId: b.id,
           buildingType: b.type,
@@ -584,9 +668,9 @@ export function buildUrbanWorldRegistry(tiles: TileData[]): UrbanWorldRegistry {
         z: tile.z + pz,
         rotationRad: 0,
         shape: 'circle',
-        halfW: 0.13,
-        halfD: 0.13,
-        radius: 0.13,
+        halfW: 0.125,
+        halfD: 0.125,
+        radius: 0.125,
         walkable: false,
         buildingId: b.id,
         buildingType: b.type,
@@ -603,18 +687,18 @@ export function buildUrbanWorldRegistry(tiles: TileData[]): UrbanWorldRegistry {
         z: tile.z + gz,
         rotationRad: 0,
         shape: 'circle',
-        halfW: 0.09,
-        halfD: 0.09,
-        radius: 0.09,
+        halfW: 0.088,
+        halfD: 0.088,
+        radius: 0.088,
         walkable: false,
         buildingId: b.id,
         buildingType: b.type,
         label: 'Coreto do Parque',
       });
-      // 2 benches
+      // 2 park benches with front-side approach points aligned to bench orientation
       const parkBenches = [
-        { lx: 0.01, lz: 0.27, localRy: -0.35, ax: 0.01, az: 0.36, faceYaw: Math.PI },
-        { lx: 0.26, lz: -0.09, localRy: Math.PI * 0.45, ax: 0.35, az: -0.09, faceYaw: -Math.PI / 2 },
+        { lx: 0.01, lz: 0.27, localRy: -0.35, ax: 0.045, az: 0.176, faceYaw: Math.PI - 0.35 },
+        { lx: 0.26, lz: -0.09, localRy: Math.PI * 0.45, ax: 0.161, az: -0.106, faceYaw: -Math.PI * 0.55 },
       ];
       parkBenches.forEach((bd, idx) => {
         const [ox, oz] = rotateLocalOffsetRad(bd.lx, bd.lz, rotRad);
@@ -631,9 +715,9 @@ export function buildUrbanWorldRegistry(tiles: TileData[]): UrbanWorldRegistry {
           z: bz,
           rotationRad: rotRad + bd.localRy,
           shape: 'box',
-          halfW: 0.068,
-          halfD: 0.032,
-          radius: 0.075,
+          halfW: 0.065,
+          halfD: 0.026,
+          radius: 0.07,
           walkable: false,
           buildingId: b.id,
           buildingType: b.type,
@@ -685,7 +769,7 @@ export function buildUrbanWorldRegistry(tiles: TileData[]): UrbanWorldRegistry {
 
     if (!isBuildingSolidObstacle(tile)) continue;
 
-    // Solid building physical body
+    // Solid building physical body + explicit oriented front door corridor
     const spec = getBuildingColliderSpec(b.type);
     const [bcx, bcz] = rotateLocalOffsetRad(spec.bodyCenterX, spec.bodyCenterZ, rotRad);
     addObjectToBuckets(registry, {
@@ -706,6 +790,42 @@ export function buildUrbanWorldRegistry(tiles: TileData[]): UrbanWorldRegistry {
       buildingType: b.type,
       label: def?.name ?? b.type,
     });
+
+    registry.doorCorridorsByBuildingId.set(b.id, {
+      buildingId: b.id,
+      tileX: tile.x,
+      tileZ: tile.z,
+      rotationRad: rotRad,
+      corridor: {
+        localCenterX: spec.doorLocalX ?? 0,
+        halfW: spec.doorHalfW ?? 0.14,
+        minLocalZ: spec.bodyCenterZ + spec.bodyHalfD - 0.14,
+        maxLocalZ: 0.54,
+      },
+    });
+
+    // Bakery sidewalk terrace umbrella/table collider
+    if (b.type === 'padaria') {
+      const [tx, tz] = rotateLocalOffsetRad(-0.22, 0.34, rotRad);
+      addObjectToBuckets(registry, {
+        id: `cafe_${b.id}`,
+        kind: 'bench',
+        category: 'furniture',
+        tileX: tile.x,
+        tileZ: tile.z,
+        x: tile.x + tx,
+        z: tile.z + tz,
+        rotationRad: rotRad,
+        shape: 'circle',
+        halfW: 0.055,
+        halfD: 0.055,
+        radius: 0.055,
+        walkable: false,
+        buildingId: b.id,
+        buildingType: b.type,
+        label: 'Mesa da Padaria',
+      });
+    }
 
     // Perimeter walls & front fence segments (leaving explicit center gate opening around local x=0, z=+half)
     if (spec.hasPerimeterFence && spec.fenceHalfSpan) {
@@ -884,12 +1004,24 @@ export function isCircleBlocked(
         checked.add(obj.id);
         if (obj.walkable) continue;
 
-        if (opts?.allowedBuildingId && obj.buildingId === opts.allowedBuildingId) {
-          if (opts.allowDirectCenterEntry) continue;
-          // Allow passing only through front entrance porch corridor, still block back/side walls
-          if (obj.kind === 'building') {
-            const spot = registry.spotById.get(`spot_ent_${obj.buildingId}`);
-            if (spot && Math.hypot(x - spot.x, z - spot.z) < 0.24) {
+        if (opts?.allowedBenchBuildingId && obj.kind === 'bench' && obj.buildingId === opts.allowedBenchBuildingId) {
+          continue;
+        }
+
+        if (opts?.allowedBuildingId && obj.buildingId === opts.allowedBuildingId && obj.kind === 'building') {
+          const dc = registry.doorCorridorsByBuildingId.get(obj.buildingId);
+          if (dc) {
+            const relX = x - dc.tileX;
+            const relZ = z - dc.tileZ;
+            const c = Math.cos(dc.rotationRad);
+            const s = Math.sin(dc.rotationRad);
+            const lx = relX * c - relZ * s;
+            const lz = relX * s + relZ * c;
+            if (
+              Math.abs(lx - dc.corridor.localCenterX) <= dc.corridor.halfW &&
+              lz >= dc.corridor.minLocalZ &&
+              lz <= dc.corridor.maxLocalZ
+            ) {
               continue;
             }
           }
@@ -1039,4 +1171,29 @@ export function reserveInteractionSpot(
   releaseCitizenSpots(registry, citizenId);
   spot.occupiedByCitizenId = citizenId;
   return true;
+}
+
+/**
+ * After UrbanWorldRegistry is rebuilt on map edits, re-bind surviving citizen spot reservations
+ * uniquely and clear orphaned reservations whose benches/buildings were removed.
+ */
+export function reconcileInteractionSpotReservations(
+  registry: UrbanWorldRegistry,
+  citizens: Array<{ id: string; occupiedSpotId?: string | null; benchPhase?: string | null; sittingYaw?: number }>,
+): void {
+  for (const spot of registry.interactionSpots) {
+    spot.occupiedByCitizenId = null;
+  }
+  for (const c of citizens) {
+    if (!c.occupiedSpotId) continue;
+    const spot = registry.spotById.get(c.occupiedSpotId);
+    if (spot && spot.occupiedByCitizenId === null) {
+      spot.occupiedByCitizenId = c.id;
+      c.sittingYaw = spot.yaw;
+    } else {
+      c.occupiedSpotId = null;
+      c.sittingYaw = undefined;
+      c.benchPhase = null;
+    }
+  }
 }

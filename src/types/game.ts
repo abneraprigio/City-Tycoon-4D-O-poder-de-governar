@@ -192,6 +192,7 @@ export type CitizenAnimState =
   | 'WalkFast'
   | 'Run'
   | 'Sit'
+  | 'StandUp'
   | 'Talk'
   | 'Wait'
   | 'Shop'
@@ -276,6 +277,13 @@ export interface CitizenAgent {
   occupiedSpotId?: string | null;
   sittingYaw?: number;
   appearanceSeed?: number;
+  // Quality & Natural Life — Render interpolation & explicit bench FSM phase
+  prevX?: number;
+  prevZ?: number;
+  prevYaw?: number;
+  benchPhase?: 'approaching' | 'turning' | 'sitting' | 'standing_up' | null;
+  benchTimer?: number;
+  unmetDemandCategory?: 'health' | 'education' | 'food' | 'work' | 'housing' | 'leisure' | null;
 }
 
 export interface Household {
@@ -335,6 +343,9 @@ export interface RoadVehicleSim {
   incidentTileKey?: string | null;
   returningToBase?: boolean;
   driverCitizenId?: string | null;
+  prevX?: number;
+  prevZ?: number;
+  prevYaw?: number;
 }
 
 export interface TransitLine {
@@ -464,6 +475,14 @@ export interface CityIndicators {
   pollution: number;
   economicDevelopment: number;
   inequality: number;
+  unmetNeeds?: {
+    health: number;
+    education: number;
+    food: number;
+    work: number;
+    housing: number;
+    leisure: number;
+  };
 }
 
 export interface Councilor {

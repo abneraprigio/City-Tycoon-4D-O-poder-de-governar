@@ -7,6 +7,7 @@ import {
 } from '../../types/game';
 import { computeBuildingAccess, tileKey } from '../navigation/obstacleSystem';
 import { UrbanNavigationCache } from '../navigation/routeCache';
+import { WORLD_SCALE } from '../worldScale';
 
 const COMMUTER_COLORS = [0x334155, 0x475569, 0x1e40af, 0x0f766e, 0x991b1b, 0x78350f, 0xd97706, 0xe2e8f0];
 const CARGO_COLORS = [0x64748b, 0x0369a1, 0xb45309];
@@ -78,19 +79,19 @@ export function spawnPurposefulVehicle(
     const yaw = Math.atan2(p1.x - p0.x, p1.z - p0.z);
 
     let color = COMMUTER_COLORS[seedHint % COMMUTER_COLORS.length];
-    let maxSpeed = 1.25;
+    let maxSpeed: number = WORLD_SCALE.vehicleSpeedsTile.commuterMax;
     if (role === 'cargo') {
       color = CARGO_COLORS[seedHint % CARGO_COLORS.length];
-      maxSpeed = 1.05;
+      maxSpeed = WORLD_SCALE.vehicleSpeedsTile.cargoMax;
     } else if (role === 'police') {
       color = 0x1e293b;
-      maxSpeed = 1.45;
+      maxSpeed = WORLD_SCALE.vehicleSpeedsTile.policeMax;
     } else if (role === 'ambulance') {
       color = 0xf8fafc;
-      maxSpeed = 1.6;
+      maxSpeed = WORLD_SCALE.vehicleSpeedsTile.emergencyMax;
     } else if (role === 'fire') {
       color = 0xdc2626;
-      maxSpeed = 1.55;
+      maxSpeed = WORLD_SCALE.vehicleSpeedsTile.emergencyMax;
     }
 
     return {
@@ -99,8 +100,11 @@ export function spawnPurposefulVehicle(
       color,
       x: p0.x,
       z: p0.z,
+      prevX: p0.x,
+      prevZ: p0.z,
       yaw,
-      speed: 0.4,
+      prevYaw: yaw,
+      speed: 0.25,
       maxSpeed,
       originTileKey: oKey,
       destTileKey: dKey,
@@ -149,15 +153,19 @@ export function dispatchEmergencyIfNeeded(
     const vehicleId = `emg_${kind}_${Date.now().toString(36).slice(-4)}`;
     const p0 = route.points[0];
     const p1 = route.points[1];
+    const yaw = Math.atan2(p1.x - p0.x, p1.z - p0.z);
     vehicles.push({
       id: vehicleId,
       role: kind,
       color: kind === 'fire' ? 0xdc2626 : kind === 'ambulance' ? 0xf8fafc : 0x1e293b,
       x: p0.x,
       z: p0.z,
-      yaw: Math.atan2(p1.x - p0.x, p1.z - p0.z),
-      speed: 0.8,
-      maxSpeed: 1.65,
+      prevX: p0.x,
+      prevZ: p0.z,
+      yaw,
+      prevYaw: yaw,
+      speed: 0.45,
+      maxSpeed: WORLD_SCALE.vehicleSpeedsTile.emergencyMax,
       originTileKey: stKey,
       destTileKey: tgKey,
       path: route.points,

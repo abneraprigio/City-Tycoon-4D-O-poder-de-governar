@@ -1,4 +1,5 @@
 import { TileData } from '../../types/game';
+import { WORLD_SCALE } from '../worldScale';
 import { CARDINAL_DIRS, tileAt, tileKey } from './obstacleSystem';
 
 export interface RoadNode {
@@ -63,7 +64,10 @@ export function buildRoadGraph(tiles: TileData[]): RoadGraph {
       x: tile.x,
       z: tile.z,
       roadType: tile.road,
-      speedLimit: tile.road === 'avenida' ? 1.65 : 1.15,
+      speedLimit:
+        tile.road === 'avenida'
+          ? WORLD_SCALE.vehicleSpeedsTile.avenidaLimit
+          : WORLD_SCALE.vehicleSpeedsTile.ruaLimit,
       isIntersection,
       isSignalized,
       neighbors,

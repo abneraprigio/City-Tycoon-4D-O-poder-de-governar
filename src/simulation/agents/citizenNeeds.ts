@@ -151,27 +151,27 @@ export function evaluateCitizenIntent(
     }
     return {
       goalType: 'seek_home',
-      thought: 'Preciso encontrar uma moradia para descansar.',
+      thought: 'Preciso de moradia disponível no bairro.',
       minDurationHours: 1.5,
       maxDurationHours: 3.0,
-      preferredBuildingTypes: ['prefeitura', 'praca'],
+      preferredBuildingTypes: ['casa_popular', 'casa_media', 'condominio', 'predio_residencial'],
     };
   }
 
   if (!c.homeTileKey && hourOfDay >= 19) {
     return {
       goalType: 'seek_home',
-      thought: 'O déficit habitacional está difícil, procuro um lar.',
+      thought: 'O déficit habitacional está difícil, faltam moradias disponíveis.',
       minDurationHours: 1.2,
       maxDurationHours: 2.5,
-      preferredBuildingTypes: ['prefeitura', 'praca'],
+      preferredBuildingTypes: ['casa_popular', 'casa_media', 'condominio', 'predio_residencial'],
     };
   }
 
   if (hunger < 30 || (scheduleSlot === 'lunch' && hunger < 62)) {
     return {
       goalType: 'eat',
-      thought: 'Vou comer alguma coisa na cidade.',
+      thought: 'Vou comer alguma coisa na padaria ou mercado.',
       minDurationHours: 0.75,
       maxDurationHours: 1.4,
       preferredBuildingTypes: ['padaria', 'restaurante', 'mercado'],
@@ -208,7 +208,15 @@ export function evaluateCitizenIntent(
       thought: 'Procurando uma oportunidade de emprego na cidade.',
       minDurationHours: 1.4,
       maxDurationHours: 2.8,
-      preferredBuildingTypes: ['prefeitura', 'mercado', 'loja', 'centro_profissionalizante'],
+      preferredBuildingTypes: [
+        'mercado',
+        'loja',
+        'padaria',
+        'restaurante',
+        'centro_profissionalizante',
+        'fabrica_pequena',
+        'galpao',
+      ],
     };
   }
 

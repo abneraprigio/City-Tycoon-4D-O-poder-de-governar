@@ -1,6 +1,7 @@
 import { CitizenAgent, RoadVehicleSim, TileData, TransitLine } from '../../types/game';
 import { tileKey } from '../navigation/obstacleSystem';
 import { UrbanNavigationCache } from '../navigation/routeCache';
+import { WORLD_SCALE } from '../worldScale';
 
 export function buildTransitLines(tiles: TileData[], navCache: UrbanNavigationCache): TransitLine[] {
   const explicitStops = tiles.filter((t) => t.busStop && t.road !== 'none');
@@ -87,15 +88,20 @@ export function stepPublicTransport(
       const route = navCache.getRoadPath(originKey, destKey);
       if (route.found && route.points.length > 0) {
         const startPt = route.points[0];
+        const nextPt = route.points[1] ?? startPt;
+        const yaw = Math.atan2(nextPt.x - startPt.x, nextPt.z - startPt.z);
         const bus: RoadVehicleSim = {
           id: `bus_${line.id}_1`,
           role: 'bus',
           color: line.color,
           x: startPt.x,
           z: startPt.z,
-          yaw: 0,
-          speed: 0.7,
-          maxSpeed: 1.15,
+          prevX: startPt.x,
+          prevZ: startPt.z,
+          yaw,
+          prevYaw: yaw,
+          speed: 0.28,
+          maxSpeed: WORLD_SCALE.vehicleSpeedsTile.busMax,
           originTileKey: originKey,
           destTileKey: destKey,
           path: route.points,

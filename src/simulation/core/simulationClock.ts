@@ -54,11 +54,9 @@ export class SimulationClock {
 
   public computePhysicalScale(speed: SpeedValue): number {
     if (speed <= 0) return 0;
-    if (speed === 0.5) return 0.55;
-    if (speed === 1) return 1.0;
-    if (speed === 2) return 1.45;
-    if (speed === 4) return 1.9;
-    return 2.35; // 8x calendar advances time rapidly while motion stays natural
+    if (speed === 0.5) return 0.65;
+    // Physical locomotion stays at natural 1.0x human/vehicle pace even at 2x/4x/8x calendar speeds
+    return 1.0;
   }
 
   public step(rawDtSeconds: number, speed: SpeedValue, config: GameTimeConfig): ClockStepResult {
@@ -109,11 +107,7 @@ export function computeStepTimings(
   const safeSecondsPerDay = Math.min(300, Math.max(60, config.secondsPerDay || 180));
   const calendarSimSeconds = clamped * speed;
   const calendarHoursDelta = (calendarSimSeconds / safeSecondsPerDay) * 24;
-  let physScale = 1.0;
-  if (speed === 0.5) physScale = 0.55;
-  else if (speed === 2) physScale = 1.45;
-  else if (speed === 4) physScale = 1.9;
-  else if (speed >= 8) physScale = 2.35;
+  const physScale = speed === 0.5 ? 0.65 : 1.0;
   return {
     calendarHoursDelta,
     physicalDt: clamped * physScale,

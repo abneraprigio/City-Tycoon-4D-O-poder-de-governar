@@ -64,6 +64,29 @@ export const WORLD_SCALE = {
     fire: { length: metersToWorld(8.1), width: metersToWorld(2.4), height: metersToWorld(3.05) },
   },
 
+  // Human locomotion speeds in physical meters/second
+  humanSpeedsMps: {
+    elderlyMin: 0.7,
+    elderlyMax: 1.0,
+    adultMin: 1.0,
+    adultMax: 1.5,
+    briskMin: 1.6,
+    briskMax: 1.8,
+    runMin: 2.5,
+    runMax: 3.0,
+  },
+
+  // Calibrated vehicle speeds in tiles/second (street ~26 km/h visual scale, avenue ~34 km/h)
+  vehicleSpeedsTile: {
+    ruaLimit: 0.56,
+    avenidaLimit: 0.72,
+    commuterMax: 0.68,
+    cargoMax: 0.52,
+    busMax: 0.56,
+    policeMax: 0.78,
+    emergencyMax: 0.9,
+  },
+
   // Streetscape & Urban Furniture
   streetAsphaltWidthU: 1.18, // 7.08 m two-way street
   avenueAsphaltWidthU: 1.48, // 8.88 m avenue with median
@@ -74,6 +97,29 @@ export const WORLD_SCALE = {
   benchSeatHeightU: metersToWorld(0.46), // ~0.077u
   streetLampHeightU: metersToWorld(4.6), // ~0.77u
 } as const;
+
+export type HumanPace = 'normal' | 'brisk' | 'run';
+
+export function getHumanSpeedMps(age: number, pace: HumanPace = 'normal', seed = 0): number {
+  const t = (Math.abs(seed * 29 + 7) % 100) / 100;
+  const s = WORLD_SCALE.humanSpeedsMps;
+  if (pace === 'run') {
+    if (age >= 64) return s.briskMin + t * (s.briskMax - s.briskMin);
+    return s.runMin + t * (s.runMax - s.runMin);
+  }
+  if (pace === 'brisk') {
+    if (age >= 64) return s.adultMin + t * 0.25;
+    return s.briskMin + t * (s.briskMax - s.briskMin);
+  }
+  if (age >= 64) {
+    return s.elderlyMin + t * (s.elderlyMax - s.elderlyMin);
+  }
+  return s.adultMin + t * (s.adultMax - s.adultMin);
+}
+
+export function getHumanSpeedTilesPerSec(age: number, pace: HumanPace = 'normal', seed = 0): number {
+  return metersToTile(getHumanSpeedMps(age, pace, seed));
+}
 
 export function getCitizenHeightWorld(age: number, seed = 0): number {
   if (age <= 13) {

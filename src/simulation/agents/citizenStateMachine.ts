@@ -27,7 +27,7 @@ import {
   reserveInteractionSpot,
   sweepSegmentCapsule,
 } from '../navigation/worldRegistry';
-import { WORLD_SCALE } from '../worldScale';
+import { getHumanSpeedTilesPerSec, metersToTile, WORLD_SCALE } from '../worldScale';
 import { evaluateCitizenIntent, findBuildingTileById, findNearestMatchingBuilding } from './citizenNeeds';
 import { getScheduledSlot } from './citizenSchedule';
 
@@ -93,10 +93,56 @@ function getTargetBehaviorForGoal(
   }
 }
 
+function mapGoalToUnmetDemand(
+  goal: ReturnType<typeof evaluateCitizenIntent>['goalType'],
+): NonNullable<CitizenAgent['unmetDemandCategory']> {
+  switch (goal) {
+    case 'health':
+      return 'health';
+    case 'study':
+      return 'education';
+    case 'eat':
+    case 'shop':
+      return 'food';
+    case 'seek_job':
+    case 'work':
+      return 'work';
+    case 'seek_home':
+    case 'sleep':
+    case 'home':
+      return 'housing';
+    default:
+      return 'leisure';
+  }
+}
+
+function getUnmetThought(cat: NonNullable<CitizenAgent['unmetDemandCategory']>): string {
+  switch (cat) {
+    case 'health':
+      return 'Preciso de atendimento médico, falta posto de saúde ou hospital acessível!';
+    case 'education':
+      return 'Falta vaga ou acesso a escola na vizinhança.';
+    case 'food':
+      return 'Falta padaria, restaurante ou mercado acessível no bairro.';
+    case 'work':
+      return 'Procuro emprego, mas faltam estabelecimentos ou acesso.';
+    case 'housing':
+      return 'Falta moradia disponível ou acesso residencial.';
+    case 'leisure':
+      return 'Seria bom ter uma praça ou parque acessível por perto.';
+  }
+}
+
 function lerpAngle(current: number, target: number, t: number): number {
   let diff = ((target - current + Math.PI) % (Math.PI * 2)) - Math.PI;
   if (diff < -Math.PI) diff += Math.PI * 2;
   return current + diff * Math.min(1, t);
+}
+
+function angleDiff(a: number, b: number): number {
+  let diff = ((b - a + Math.PI) % (Math.PI * 2)) - Math.PI;
+  if (diff < -Math.PI) diff += Math.PI * 2;
+  return Math.abs(diff);
 }
 
 function shouldStayInsideBuilding(tile: TileData | null): boolean {
@@ -149,26 +195,45 @@ function assignRouteToTile(
     return false;
   }
 
-  // Smooth intermediate waypoints ONLY when physically obstacle-free
+  // Smooth intermediate waypoints ONLY when physically obstacle-free (no wall tunneling)
   const smoothed = smoothPedestrianPath(res.points, (ax, az, bx, bz) =>
-    hasLineOfSight(registry, tiles, ax, az, bx, bz, PEDESTRIAN_RADIUS * 0.9, {
+    hasLineOfSight(registry, tiles, ax, az, bx, bz, PEDESTRIAN_RADIUS * 0.92, {
       allowedBuildingId: destTile.building?.id ?? null,
     }),
   );
 
-  // If heading to a plaza/park to relax/socialize, reserve an unoccupied bench seat spot if available
+  // If heading to a plaza/park, reserve an unoccupied reachable bench seat spot (never teleporting)
   const finalPoints = [...smoothed];
   if (
     destTile.building &&
     (destTile.building.type === 'praca' || destTile.building.type === 'parque')
   ) {
     const seat = findAvailableInteractionSpot(registry, destTile.building.id, 'seat', c.id);
-    if (seat && reserveInteractionSpot(registry, seat.id, c.id)) {
-      c.occupiedSpotId = seat.id;
-      c.sittingYaw = seat.yaw;
+    if (seat) {
       const last = finalPoints[finalPoints.length - 1];
+      const approachNode = findNearestPedestrianNode(pedGraph, seat.approachX, seat.approachZ, 1, tiles, registry);
+      let seatPathAdded = false;
       if (hasLineOfSight(registry, tiles, last.x, last.z, seat.approachX, seat.approachZ, PEDESTRIAN_RADIUS * 0.8)) {
         finalPoints.push({ x: seat.approachX, z: seat.approachZ });
+        seatPathAdded = true;
+      } else if (approachNode) {
+        const sub = navCache.getPedestrianPath(goalNodeId, approachNode.id);
+        if (sub.found && sub.points.length > 0) {
+          for (let i = 1; i < sub.points.length; i++) {
+            finalPoints.push(sub.points[i]);
+          }
+          const subLast = finalPoints[finalPoints.length - 1];
+          if (hasLineOfSight(registry, tiles, subLast.x, subLast.z, seat.approachX, seat.approachZ, PEDESTRIAN_RADIUS * 0.78)) {
+            finalPoints.push({ x: seat.approachX, z: seat.approachZ });
+            seatPathAdded = true;
+          }
+        }
+      }
+      if (seatPathAdded && reserveInteractionSpot(registry, seat.id, c.id)) {
+        c.occupiedSpotId = seat.id;
+        c.sittingYaw = seat.yaw;
+        c.benchPhase = null;
+        c.benchTimer = 0;
       }
     }
   }
@@ -180,6 +245,144 @@ function assignRouteToTile(
   c.targetZ = finalPt.z;
   c.targetBuildingId = destTile.building?.id ?? null;
   return true;
+}
+
+function stepBenchSequence(
+  c: CitizenAgent,
+  registry: UrbanNavigationCache['worldRegistry'],
+  tiles: TileData[],
+  physicalDt: number,
+  calendarHoursDelta: number,
+): boolean {
+  if (!c.benchPhase || !c.occupiedSpotId) return false;
+  const seat = registry.spotById.get(c.occupiedSpotId);
+  if (!seat) {
+    // Bench or park was removed while interacting: cleanly exit bench state
+    releaseCitizenSpots(registry, c.id);
+    c.occupiedSpotId = null;
+    c.sittingYaw = undefined;
+    c.benchPhase = null;
+    c.benchTimer = 0;
+    c.animState = 'Idle';
+    c.movementState = 'stopped';
+    return false;
+  }
+
+  if (c.benchPhase === 'approaching') {
+    const dx = seat.x - c.x;
+    const dz = seat.z - c.z;
+    const dist = Math.hypot(dx, dz);
+    if (dist <= 0.032) {
+      c.x = seat.x;
+      c.z = seat.z;
+      c.lastValidX = seat.x;
+      c.lastValidZ = seat.z;
+      c.currentSpeed = 0;
+      c.benchPhase = 'turning';
+      c.benchTimer = 0.28;
+      c.animState = 'Idle';
+      c.movementState = 'stopped';
+    } else if (physicalDt > 0) {
+      const spd = metersToTile(0.85);
+      const step = Math.min(dist, spd * physicalDt);
+      const nx = c.x + (dx / dist) * step;
+      const nz = c.z + (dz / dist) * step;
+      const swept = sweepSegmentCapsule(registry, tiles, c.x, c.z, nx, nz, PEDESTRIAN_RADIUS * 0.72, {
+        allowedBenchBuildingId: seat.buildingId ?? null,
+      });
+      if (!swept.hit) {
+        c.x = nx;
+        c.z = nz;
+        c.lastValidX = nx;
+        c.lastValidZ = nz;
+      } else {
+        c.x = swept.safeX;
+        c.z = swept.safeZ;
+        c.benchPhase = 'turning';
+        c.benchTimer = 0.28;
+      }
+      c.yaw = lerpAngle(c.yaw ?? seat.yaw, Math.atan2(dx, dz), physicalDt * 9);
+      c.currentSpeed = spd;
+      c.movementState = 'walking';
+      c.animState = 'WalkSlow';
+    }
+    return true;
+  }
+
+  if (c.benchPhase === 'turning') {
+    c.currentSpeed = 0;
+    c.movementState = 'stopped';
+    c.animState = 'Idle';
+    c.yaw = lerpAngle(c.yaw ?? seat.yaw, seat.yaw, Math.max(0.15, physicalDt * 8));
+    c.benchTimer = Math.max(0, (c.benchTimer ?? 0.25) - physicalDt);
+    if (angleDiff(c.yaw ?? seat.yaw, seat.yaw) < 0.12 || c.benchTimer <= 0) {
+      c.yaw = seat.yaw;
+      c.benchPhase = 'sitting';
+      c.animState = 'Sit';
+    }
+    return true;
+  }
+
+  if (c.benchPhase === 'sitting') {
+    c.currentSpeed = 0;
+    c.movementState = 'stopped';
+    c.animState = 'Sit';
+    c.yaw = lerpAngle(c.yaw ?? seat.yaw, seat.yaw, Math.max(0.1, physicalDt * 6));
+    if ((c.activityUntilHour ?? 0) > 0) {
+      c.activityUntilHour = Math.max(0, (c.activityUntilHour ?? 0) - calendarHoursDelta);
+    }
+    if ((c.activityUntilHour ?? 0) <= 0.02) {
+      c.benchPhase = 'standing_up';
+      c.benchTimer = 0.52;
+      c.animState = 'StandUp';
+    }
+    return true;
+  }
+
+  if (c.benchPhase === 'standing_up') {
+    c.animState = 'StandUp';
+    c.benchTimer = Math.max(0, (c.benchTimer ?? 0.5) - physicalDt);
+    // Smoothly step forward off bench planks back onto approach point
+    const dx = seat.approachX - c.x;
+    const dz = seat.approachZ - c.z;
+    const dist = Math.hypot(dx, dz);
+    if (dist > 0.015 && physicalDt > 0 && c.benchTimer < 0.35) {
+      const spd = metersToTile(0.75);
+      const step = Math.min(dist, spd * physicalDt);
+      const nx = c.x + (dx / dist) * step;
+      const nz = c.z + (dz / dist) * step;
+      const swept = sweepSegmentCapsule(registry, tiles, c.x, c.z, nx, nz, PEDESTRIAN_RADIUS * 0.72, {
+        allowedBenchBuildingId: seat.buildingId ?? null,
+      });
+      if (!swept.hit) {
+        c.x = nx;
+        c.z = nz;
+        c.lastValidX = nx;
+        c.lastValidZ = nz;
+      }
+      c.movementState = 'walking';
+      c.currentSpeed = spd;
+    } else {
+      c.movementState = 'stopped';
+      c.currentSpeed = 0;
+    }
+
+    if ((c.benchTimer ?? 0) <= 0) {
+      c.benchPhase = null;
+      c.benchTimer = 0;
+      releaseCitizenSpots(registry, c.id);
+      c.occupiedSpotId = null;
+      c.sittingYaw = undefined;
+      c.animState = 'Idle';
+      c.movementState = 'stopped';
+      c.currentSpeed = 0;
+      c.decisionCooldown = 0;
+      return false;
+    }
+    return true;
+  }
+
+  return false;
 }
 
 export function stepCitizenBehaviorAndMotion(
@@ -198,7 +401,7 @@ export function stepCitizenBehaviorAndMotion(
   canMakeDecisionNow: boolean,
   vehicles: RoadVehicleSim[] = [],
 ): void {
-  // Freeze completely when simulation is paused (speed === 0 => physicalDt === 0 & calendarHoursDelta === 0)
+  // Freeze completely when simulation is paused
   if (physicalDt <= 0 && calendarHoursDelta <= 0) {
     return;
   }
@@ -207,9 +410,15 @@ export function stepCitizenBehaviorAndMotion(
   const isWeekend = day % 7 === 6 || day % 7 === 0;
   const currentBuilding = findBuildingTileById(tiles, c.insideBuildingId);
 
-  // Initialize lastValid anchor safely on first step
+  // Initialize lastValid anchor safely on first step without bypassing building walls
   if (c.lastValidX === undefined || c.lastValidZ === undefined) {
-    if (!c.insideBuildingId && isCircleBlocked(registry, tiles, c.x, c.z, PEDESTRIAN_RADIUS * 0.85, { allowedBuildingId: c.targetBuildingId, allowDirectCenterEntry: true }).blocked) {
+    if (
+      !c.insideBuildingId &&
+      isCircleBlocked(registry, tiles, c.x, c.z, PEDESTRIAN_RADIUS * 0.85, {
+        allowedBuildingId: c.targetBuildingId,
+        allowedBenchBuildingId: c.benchPhase ? c.targetBuildingId : null,
+      }).blocked
+    ) {
       const safeNode = findNearestPedestrianNode(navCache.pedestrianGraph, c.x, c.z, 3, tiles, registry);
       if (safeNode) {
         c.x = safeNode.x;
@@ -225,6 +434,8 @@ export function stepCitizenBehaviorAndMotion(
     releaseCitizenSpots(registry, c.id);
     c.occupiedSpotId = null;
     c.sittingYaw = undefined;
+    c.benchPhase = null;
+    c.benchTimer = 0;
     const safeNode = findNearestPedestrianNode(navCache.pedestrianGraph, c.x, c.z, 3, tiles, registry);
     if (safeNode) {
       c.x = safeNode.x;
@@ -245,14 +456,19 @@ export function stepCitizenBehaviorAndMotion(
     c.decisionCooldown = Math.max(0, (c.decisionCooldown ?? 0) - calendarHoursDelta);
   }
 
-  // Check if current inside-building or stationary activity has completed
+  // Run explicit Bench FSM (approach -> turn -> sit -> stand_up -> release) if active
+  if (stepBenchSequence(c, registry, tiles, physicalDt, calendarHoursDelta)) {
+    c.state = mapBehaviorToLegacyState(c.behaviorState ?? 'Socializing');
+    return;
+  }
+
+  // Check if current inside-building or stationary activity is still in progress
   const activityRemaining = c.activityUntilHour ?? 0;
   if (c.insideBuildingId || (c.movementState === 'stopped' && (!c.path || c.pathIndex === undefined || c.pathIndex >= c.path.length))) {
     if (activityRemaining > 0) {
       c.activityUntilHour = Math.max(0, activityRemaining - calendarHoursDelta);
     }
 
-    // If still committed to staying inside or resting/socializing on bench, stay put & animate naturally
     if ((c.activityUntilHour ?? 0) > 0.02) {
       c.currentSpeed = 0;
       if (c.insideBuildingId && currentBuilding) {
@@ -260,10 +476,6 @@ export function stepCitizenBehaviorAndMotion(
         c.z = currentBuilding.z;
         c.movementState = 'stopped';
         c.animState = c.behaviorState === 'Working' ? 'Work' : c.behaviorState === 'Shopping' ? 'Shop' : 'Idle';
-      } else if (c.occupiedSpotId && c.sittingYaw !== undefined) {
-        c.yaw = lerpAngle(c.yaw ?? c.sittingYaw, c.sittingYaw, Math.max(0.1, physicalDt * 6));
-        c.movementState = 'stopped';
-        c.animState = 'Sit';
       } else if (c.behaviorState === 'Socializing' && c.talkingWithId) {
         const partner = allCitizens.find((o) => o.id === c.talkingWithId);
         if (partner && Math.hypot(partner.x - c.x, partner.z - c.z) < 1.3) {
@@ -285,11 +497,13 @@ export function stepCitizenBehaviorAndMotion(
     releaseCitizenSpots(registry, c.id);
     c.occupiedSpotId = null;
     c.sittingYaw = undefined;
+    c.benchPhase = null;
+    c.benchTimer = 0;
 
     const slot = getScheduledSlot(c.scheduleProfile ?? 'clt', hourOfDay, c.staggerMinutes ?? 0, day);
     const intent = evaluateCitizenIntent(c, hourOfDay, isWeekend, slot, indicators, economy, hasActiveConflict);
 
-    // Choose concrete destination tile
+    // Choose strict category-matched destination tile
     let destTile: TileData | null = null;
     if (intent.goalType === 'sleep' || intent.goalType === 'home') {
       destTile = findBuildingTileById(tiles, c.residenceBuildingId);
@@ -299,24 +513,39 @@ export function stepCitizenBehaviorAndMotion(
     if (!destTile && intent.preferredBuildingTypes.length > 0) {
       destTile = findNearestMatchingBuilding(tiles, c.x, c.z, intent.preferredBuildingTypes);
     }
-
-    if (!destTile) {
-      destTile = tiles.find((t) => t.building?.type === 'praca' || t.building?.type === 'prefeitura') ?? null;
+    // If hungry and no padaria/mercado/restaurante exists, only eat at own residence (never fallback to praca/prefeitura!)
+    if (!destTile && intent.goalType === 'eat' && c.residenceBuildingId) {
+      destTile = findBuildingTileById(tiles, c.residenceBuildingId);
     }
 
-    if (destTile) {
-      // Already inside or right at front door of destination building? Enter cleanly
-      const curEntDist = Math.hypot(c.x - destTile.x, c.z - destTile.z);
-      const isAlreadyAtDestination =
-        destTile.building &&
-        (c.insideBuildingId === destTile.building.id ||
-          (curEntDist < 0.56 &&
-            hasLineOfSight(registry, tiles, c.x, c.z, destTile.x, destTile.z, PEDESTRIAN_RADIUS * 0.7, {
-              allowedBuildingId: destTile.building.id,
-              allowDirectCenterEntry: true,
-            })));
+    if (!destTile) {
+      // Record unmet demand transparently to mayor instead of routing to unrelated buildings
+      const unmet = mapGoalToUnmetDemand(intent.goalType);
+      c.unmetDemandCategory = unmet;
+      c.behaviorState = 'WaitingForPath';
+      c.movementState = 'stopped';
+      c.animState = 'Wait';
+      c.currentSpeed = 0;
+      c.blockedReason = getUnmetThought(unmet);
+      c.thought = c.blockedReason;
+      c.decisionCooldown = 0.85;
+      c.state = mapBehaviorToLegacyState(c.behaviorState);
+      return;
+    }
 
-      if (destTile.building && isAlreadyAtDestination) {
+    c.unmetDemandCategory = null;
+
+    if (destTile.building) {
+      const access = computeBuildingAccess(tiles, destTile);
+      const nearFrontDoor = Math.hypot(c.x - access.entrancePoint.x, c.z - access.entrancePoint.z) < 0.24;
+      const isAlreadyAtDestination =
+        c.insideBuildingId === destTile.building.id ||
+        (nearFrontDoor &&
+          hasLineOfSight(registry, tiles, c.x, c.z, access.entrancePoint.x, access.entrancePoint.z, PEDESTRIAN_RADIUS * 0.72, {
+            allowedBuildingId: destTile.building.id,
+          }));
+
+      if (isAlreadyAtDestination) {
         const nextBehavior = getTargetBehaviorForGoal(intent.goalType);
         c.behaviorState = nextBehavior;
         c.intent = intent.goalType;
@@ -342,10 +571,17 @@ export function stepCitizenBehaviorAndMotion(
           if (seat && reserveInteractionSpot(registry, seat.id, c.id)) {
             c.occupiedSpotId = seat.id;
             c.sittingYaw = seat.yaw;
-            c.x = seat.x;
-            c.z = seat.z;
-            c.yaw = seat.yaw;
-            c.animState = 'Sit';
+            c.targetBuildingId = destTile.building.id;
+            // Walk smoothly to approach then step onto bench (no teleport)
+            if (hasLineOfSight(registry, tiles, c.x, c.z, seat.approachX, seat.approachZ, PEDESTRIAN_RADIUS * 0.75)) {
+              c.path = [{ x: seat.approachX, z: seat.approachZ }];
+              c.pathIndex = 0;
+              c.activityMinDurationHours = dur;
+              c.behaviorState = 'WalkingToDestination';
+            } else {
+              c.benchPhase = 'approaching';
+              c.benchTimer = 0.9;
+            }
           } else {
             c.animState = nextBehavior === 'Protesting' ? 'Talk' : 'Idle';
           }
@@ -356,9 +592,9 @@ export function stepCitizenBehaviorAndMotion(
 
       // Exit current building onto its clear front entrance before routing
       if (c.insideBuildingId && currentBuilding) {
-        const access = computeBuildingAccess(tiles, currentBuilding);
-        c.x = access.entrancePoint.x;
-        c.z = access.entrancePoint.z;
+        const curAccess = computeBuildingAccess(tiles, currentBuilding);
+        c.x = curAccess.entrancePoint.x;
+        c.z = curAccess.entrancePoint.z;
         c.lastValidX = c.x;
         c.lastValidZ = c.z;
         c.insideBuildingId = null;
@@ -383,7 +619,8 @@ export function stepCitizenBehaviorAndMotion(
         c.transportMode = pathDist > 18 && tiles.some((t) => t.busStop) ? 'bus' : 'walk';
         c.decisionCooldown = 0.4;
       } else {
-        // Unreachable: wait peacefully without teleporting
+        const unmet = mapGoalToUnmetDemand(intent.goalType);
+        c.unmetDemandCategory = unmet;
         c.behaviorState = 'WaitingForPath';
         c.movementState = 'waiting';
         c.animState = 'Wait';
@@ -406,10 +643,9 @@ export function stepCitizenBehaviorAndMotion(
     const dz = wp.z - c.z;
     const dist = Math.hypot(dx, dz);
 
-    if (dist < 0.095) {
+    if (dist < 0.08) {
       c.pathIndex += 1;
       if (c.pathIndex >= c.path.length) {
-        // Arrived at target!
         c.path = [];
         c.pathIndex = 0;
         c.currentSpeed = 0;
@@ -430,13 +666,10 @@ export function stepCitizenBehaviorAndMotion(
         } else {
           c.insideBuildingId = null;
           if (c.occupiedSpotId && c.sittingYaw !== undefined) {
-            const seat = registry.spotById.get(c.occupiedSpotId);
-            if (seat) {
-              c.x = seat.x;
-              c.z = seat.z;
-            }
-            c.yaw = c.sittingYaw;
-            c.animState = 'Sit';
+            // Transition smoothly into approaching -> turning -> sitting (NEVER teleport)
+            c.benchPhase = 'approaching';
+            c.benchTimer = 0.9;
+            c.animState = 'WalkSlow';
           } else {
             c.animState =
               arrivedBehavior === 'Socializing' || arrivedBehavior === 'Protesting' ? 'Talk' : 'Idle';
@@ -449,40 +682,50 @@ export function stepCitizenBehaviorAndMotion(
       const dirX = dx / dist;
       const dirZ = dz / dist;
 
-      // Crosswalk safety: yield cleanly if an active vehicle is approaching the crossing
+      // Crosswalk & near-field vehicle safety: yield cleanly if an active vehicle is approaching
       const crossingNow = isCrosswalkPoint(navCache.pedestrianGraph, wp) || isCrosswalkPoint(navCache.pedestrianGraph, { x: c.x, z: c.z });
-      if (crossingNow && vehicles.length > 0) {
+      if (vehicles.length > 0) {
         for (let i = 0; i < vehicles.length; i++) {
           const v = vehicles[i];
-          if (v.speed < 0.06) continue;
+          if (v.speed < 0.04) continue;
           const vx = c.x - v.x;
           const vz = c.z - v.z;
           const vDist = Math.hypot(vx, vz);
-          if (vDist < 0.52) {
+          const checkRange = crossingNow ? 0.56 : 0.36;
+          if (vDist < checkRange) {
             const vDirX = Math.sin(v.yaw);
             const vDirZ = Math.cos(v.yaw);
-            // If citizen is right in front of approaching vehicle, stop at curb/edge
             if (vx * vDirX + vz * vDirZ > -0.05) {
               c.currentSpeed = 0;
               c.movementState = 'waiting';
               c.animState = 'Wait';
-              c.behaviorState = 'CrossingStreet';
+              if (crossingNow) c.behaviorState = 'CrossingStreet';
               c.blockedReason = 'Aguardando veículo na faixa';
-              c.state = mapBehaviorToLegacyState(c.behaviorState);
+              c.state = mapBehaviorToLegacyState(c.behaviorState ?? 'CrossingStreet');
               return;
             }
           }
         }
       }
 
-      // Base speed calibrated to 0.14 - 0.25 tiles/s for natural human pace (jog/exercise up to 0.33)
+      // Metric physical speed calibrated to human pace (0.7–1.0 m/s elderly, 1.0–1.5 m/s adult, 1.6–1.8 brisk, 2.5–3.0 run)
       const isJogging = c.intent === 'exercise' && (c.personality === 'aventureiro' || (c.needs.energy ?? 70) > 65);
-      const baseSpeed = isJogging ? 0.32 : Math.min(0.24, Math.max(0.14, c.speed * 0.16));
-      let targetSpeed = baseSpeed * Math.min(2.0, Math.max(0.5, timeConfig.npcSpeedMultiplier));
+      const isBrisk =
+        !isJogging &&
+        (c.intent === 'work' || c.intent === 'health') &&
+        c.age < 64 &&
+        (c.personality === 'trabalhador' || c.personality === 'organizado' || c.personality === 'ambicioso');
+      const baseSpeed = getHumanSpeedTilesPerSec(
+        c.age,
+        isJogging ? 'run' : isBrisk ? 'brisk' : 'normal',
+        c.appearanceSeed ?? 0,
+      );
+      const clampedTuning = Math.min(1.35, Math.max(0.75, timeConfig.npcSpeedMultiplier));
+      let targetSpeed = baseSpeed * clampedTuning;
 
-      // Decelerate smoothly near final destination or tight turns
-      if (dist < 0.24 && c.pathIndex === c.path.length - 1) {
-        targetSpeed *= 0.62;
+      // Progressive deceleration near final destination or tight direction changes
+      if (dist < 0.28 && c.pathIndex === c.path.length - 1) {
+        targetSpeed *= Math.max(0.45, dist / 0.28);
       }
 
       // Personal-space lateral avoidance, right-hand pass deflection, queue braking, and pace sync
@@ -500,16 +743,14 @@ export function stepCitizenBehaviorAndMotion(
           const towardOtherDot = ((-ox / od) * dirX) + ((-oz / od) * dirZ);
           const otherFacingDot =
             Math.sin(other.yaw ?? 0) * dirX + Math.cos(other.yaw ?? 0) * dirZ;
-          // Ahead in our path: slow down / yield smoothly & pass on the right
           if (towardOtherDot > 0.35) {
             if (od < PEDESTRIAN_RADIUS * 1.75) {
               targetSpeed *= 0.25;
-            } else if ((other.currentSpeed ?? 0) < 0.04 && od < 0.17) {
+            } else if ((other.currentSpeed ?? 0) < 0.03 && od < 0.17) {
               targetSpeed *= 0.3;
             } else {
-              targetSpeed = Math.min(targetSpeed, Math.max(0.08, (other.currentSpeed ?? baseSpeed) * 0.96));
+              targetSpeed = Math.min(targetSpeed, Math.max(metersToTile(0.65), (other.currentSpeed ?? baseSpeed) * 0.96));
             }
-            // If walking opposite directions nearly head-on, add consistent right-hand sidestep
             if (otherFacingDot < -0.35) {
               const passWeight = ((0.3 - od) / 0.3) * 0.85;
               steerX += rightX * passWeight;
@@ -522,25 +763,19 @@ export function stepCitizenBehaviorAndMotion(
         }
       }
 
-      // Pre-obstacle lookahead braking
-      const lookX = c.x + dirX * 0.22;
-      const lookZ = c.z + dirZ * 0.22;
+      // Strict collision options: front door corridor ONLY when on final waypoint toward target building
       const isFinalWaypoint = c.pathIndex === c.path.length - 1;
-      const allowDirectCenterEntry = Boolean(
-        c.targetBuildingId &&
-          isFinalWaypoint &&
-          Math.hypot(wp.x - c.x, wp.z - c.z) < 0.58,
-      );
       const collisionOpts = {
-        allowedBuildingId: c.targetBuildingId,
-        allowDirectCenterEntry,
+        allowedBuildingId: isFinalWaypoint ? c.targetBuildingId : null,
       };
+      const lookX = c.x + dirX * 0.2;
+      const lookZ = c.z + dirZ * 0.2;
       if (isCircleBlocked(registry, tiles, lookX, lookZ, PEDESTRIAN_RADIUS, collisionOpts).blocked) {
         targetSpeed *= 0.55;
       }
 
       const curSpd = c.currentSpeed ?? 0;
-      const accel = targetSpeed > curSpd ? 0.65 : 1.25;
+      const accel = targetSpeed > curSpd ? metersToTile(3.2) : metersToTile(6.0);
       const nextSpd =
         curSpd + Math.sign(targetSpeed - curSpd) * Math.min(Math.abs(targetSpeed - curSpd), accel * physicalDt);
       c.currentSpeed = nextSpd;
@@ -553,8 +788,8 @@ export function stepCitizenBehaviorAndMotion(
       const candX = Math.min(GRID_SIZE - 0.55, Math.max(0.55, c.x + steerX * step));
       const candZ = Math.min(GRID_SIZE - 0.55, Math.max(0.55, c.z + steerZ * step));
 
-      // Continuous swept-segment capsule check: NEVER allow entering solid obstacles
-      let swept = sweepSegmentCapsule(
+      // Continuous swept-segment capsule check: NEVER allow entering solid obstacles or non-door walls
+      const swept = sweepSegmentCapsule(
         registry,
         tiles,
         c.x,
@@ -570,7 +805,6 @@ export function stepCitizenBehaviorAndMotion(
       let moved = true;
 
       if (swept.hit) {
-        // Attempt validated angled lateral bypasses without touching solid colliders
         const tryAngles = [0.55, -0.55, 1.05, -1.05];
         let foundSlide = false;
         const baseAngle = Math.atan2(dirZ, dirX);
@@ -615,7 +849,6 @@ export function stepCitizenBehaviorAndMotion(
             c.blockedReason,
           );
 
-          // After stalling 4 ticks against an obstacle, invalidate route & recompute A*
           if ((c.blockedTicks ?? 0) >= 4) {
             c.path = [];
             c.pathIndex = 0;
@@ -636,7 +869,6 @@ export function stepCitizenBehaviorAndMotion(
         recordTrailPoint(c);
       }
 
-      // Smooth yaw orientation (damped hysteresis prevents spin oscillation)
       if (dist > 0.015) {
         const targetYaw = Math.atan2(dx, dz);
         c.yaw = lerpAngle(c.yaw ?? targetYaw, targetYaw, physicalDt * 8.5);
@@ -651,14 +883,15 @@ export function stepCitizenBehaviorAndMotion(
       }
 
       c.movementState = isJogging ? 'jogging' : 'walking';
-      if (nextSpd < 0.02) {
+      // Synchronize animation state strictly with real metric speed (m/s -> tiles/s)
+      if (nextSpd < metersToTile(0.25)) {
         c.movementState = 'waiting';
         c.animState = 'Wait';
-      } else if (nextSpd < 0.15) {
+      } else if (nextSpd < metersToTile(1.02)) {
         c.animState = 'WalkSlow';
-      } else if (nextSpd < 0.24) {
+      } else if (nextSpd < metersToTile(1.56)) {
         c.animState = 'Walk';
-      } else if (nextSpd < 0.3) {
+      } else if (nextSpd < metersToTile(2.15)) {
         c.animState = 'WalkFast';
       } else {
         c.animState = 'Run';

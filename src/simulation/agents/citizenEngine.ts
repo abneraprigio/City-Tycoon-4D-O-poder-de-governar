@@ -45,6 +45,10 @@ export function normalizeCitizensForLivingWorld(
     if (c.appearanceSeed === undefined) c.appearanceSeed = i * 97 + c.age * 13;
     if (c.lastValidX === undefined) c.lastValidX = c.x;
     if (c.lastValidZ === undefined) c.lastValidZ = c.z;
+    if (c.prevX === undefined) c.prevX = c.x;
+    if (c.prevZ === undefined) c.prevZ = c.z;
+    if (c.prevYaw === undefined) c.prevYaw = c.yaw;
+    if (c.benchPhase === undefined) c.benchPhase = null;
   }
 }
 
@@ -69,6 +73,7 @@ function pairSocializingNeighbors(citizens: CitizenAgent[]): void {
       c.behaviorState === 'Socializing' &&
       !c.talkingWithId &&
       !c.occupiedSpotId &&
+      !c.benchPhase &&
       c.movementState === 'stopped',
   );
   for (let i = 0; i < candidates.length; i++) {
@@ -82,6 +87,8 @@ function pairSocializingNeighbors(citizens: CitizenAgent[]): void {
         b.talkingWithId = a.id;
         a.animState = 'Talk';
         b.animState = 'Talk';
+        a.activityUntilHour = Math.max(a.activityUntilHour ?? 1.0, 1.0);
+        b.activityUntilHour = Math.max(b.activityUntilHour ?? 1.0, 1.0);
         a.thought = `Conversando com ${b.name.split(' ')[0]} na praça.`;
         b.thought = `Trocando ideias com ${a.name.split(' ')[0]}.`;
         break;
