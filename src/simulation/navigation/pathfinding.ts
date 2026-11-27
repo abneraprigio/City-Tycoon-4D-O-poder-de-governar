@@ -213,3 +213,33 @@ export function findRoadPath(
 
   return { found: false, points: [], nodeIds: [], totalCost: Infinity };
 }
+
+/**
+ * String-pulling smoother that only removes intermediate waypoints when
+ * the straight segment is 100% obstacle-free (no building/wall/pole clipping).
+ */
+export function smoothPedestrianPath(
+  points: PathPoint[],
+  isClear: (ax: number, az: number, bx: number, bz: number) => boolean,
+): PathPoint[] {
+  if (points.length <= 2) return points;
+  const smoothed: PathPoint[] = [points[0]];
+  let anchor = 0;
+
+  while (anchor < points.length - 1) {
+    let farthest = anchor + 1;
+    // Try skipping up to 3 intermediate nodes when obstacle-free
+    const limit = Math.min(points.length - 1, anchor + 4);
+    for (let cand = limit; cand > anchor + 1; cand--) {
+      if (isClear(points[anchor].x, points[anchor].z, points[cand].x, points[cand].z)) {
+        farthest = cand;
+        break;
+      }
+    }
+    smoothed.push(points[farthest]);
+    anchor = farthest;
+  }
+
+  return smoothed;
+}
+

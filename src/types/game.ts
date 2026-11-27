@@ -267,6 +267,15 @@ export interface CitizenAgent {
   decisionCooldown?: number;
   talkingWithId?: string | null;
   history?: string[];
+  // Sprint 1 — Continuous Collision, Trail & Interaction Spot fields
+  lastValidX?: number;
+  lastValidZ?: number;
+  lastCollisionAt?: number;
+  blockedReason?: string;
+  trailHistory?: PathPoint[];
+  occupiedSpotId?: string | null;
+  sittingYaw?: number;
+  appearanceSeed?: number;
 }
 
 export interface Household {
@@ -377,6 +386,8 @@ export interface CitySimulationStats {
   pedestrianNodes: number;
   roadNodes: number;
   cachedRoutes: number;
+  collisionHits?: number;
+  worldObjects?: number;
 }
 
 export type ThematicMapMode =

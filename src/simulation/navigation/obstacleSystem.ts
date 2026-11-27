@@ -1,4 +1,5 @@
 import { BUILDING_CATALOG, GRID_SIZE, PathPoint, TileData } from '../../types/game';
+import { WORLD_SCALE } from '../worldScale';
 
 export const CARDINAL_DIRS = [
   { dx: 0, dz: 1, rotation: 0 }, // South (+Z)
@@ -93,8 +94,10 @@ export function computeFacingRoadRotation(
   return bestRot;
 }
 
+export const SW_OFF = WORLD_SCALE.sidewalkWalkableOffsetTile; // 0.445 tiles from road center
+
 export interface BuildingAccessInfo {
-  entrancePoint: PathPoint; // Front porch just outside gate/door
+  entrancePoint: PathPoint; // Front porch right outside gate/door
   sidewalkPoint: PathPoint; // Nearest sidewalk connection point
   adjacentRoadTile: { x: number; z: number } | null;
 }
@@ -124,16 +127,16 @@ export function computeBuildingAccess(tiles: TileData[], tile: TileData): Buildi
   const dx = adjRoad ? adjRoad.x - tile.x : facing.dx;
   const dz = adjRoad ? adjRoad.z - tile.z : facing.dz;
 
-  // Front porch sits right inside tile boundary facing the street; sidewalk point sits on the road's nearest sidewalk
+  // Front porch sits right outside the front fence gate facing the street
   const entrancePoint: PathPoint = {
-    x: tile.x + dx * 0.44,
-    z: tile.z + dz * 0.44,
+    x: tile.x + dx * 0.46,
+    z: tile.z + dz * 0.46,
   };
 
   const sidewalkPoint: PathPoint = adjRoad
     ? {
-        x: adjRoad.x - dx * 0.38,
-        z: adjRoad.z - dz * 0.38,
+        x: adjRoad.x - dx * SW_OFF,
+        z: adjRoad.z - dz * SW_OFF,
       }
     : {
         x: Math.min(GRID_SIZE - 0.6, Math.max(0.6, tile.x + dx * 0.62)),

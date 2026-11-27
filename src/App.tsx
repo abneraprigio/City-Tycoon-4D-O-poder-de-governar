@@ -15,8 +15,8 @@ function DiagnosticsHud() {
   if (!debugOverlay || zenMode) return null;
 
   return (
-    <div className="fixed top-12 left-1/2 -translate-x-1/2 z-20 pointer-events-none bg-slate-950/92 border border-emerald-700/70 rounded px-3 py-1.5 text-[11px] font-mono-num text-slate-200 flex flex-wrap items-center gap-3 shadow-lg">
-      <span className="text-emerald-400 font-semibold">DIAGNÓSTICO</span>
+    <div className="fixed top-12 left-1/2 -translate-x-1/2 z-20 pointer-events-none bg-[#F2F0E8] border border-[#496B57] rounded px-3 py-1.5 text-[11px] font-mono-num text-[#283B49] flex flex-wrap items-center gap-3 shadow-md">
+      <span className="text-[#496B57] font-bold">DIAGNÓSTICO</span>
       <span>FPS: {simStats.fps}</span>
       <span>Sim: {simStats.simStepMs.toFixed(2)}ms</span>
       <span>
@@ -25,6 +25,9 @@ function DiagnosticsHud() {
       <span>Veículos: {simStats.activeVehicles} (Bus pax: {simStats.busPassengers})</span>
       <span>
         Grafos: {simStats.pedestrianNodes} calç. / {simStats.roadNodes} viário / {simStats.cachedRoutes} cache
+      </span>
+      <span>
+        Colisões: {simStats.collisionHits ?? 0} ({simStats.worldObjects ?? 0} objs)
       </span>
     </div>
   );

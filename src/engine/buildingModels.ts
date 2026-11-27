@@ -395,10 +395,28 @@ function addPerimeterWallAndGate(
   addPart(group, _box1, wallMat, 0, wallH / 2 + 0.04, -halfD, w, wallH, 0.05);
   addPart(group, _box1, wallMat, -halfW, wallH / 2 + 0.04, 0, 0.05, wallH, d);
   addPart(group, _box1, wallMat, halfW, wallH / 2 + 0.04, 0, 0.05, wallH, d);
-  // Front wall segments + metal sliding gate
-  addPart(group, _box1, wallMat, -halfW * 0.56, wallH / 2 + 0.04, halfD, w * 0.42, wallH, 0.05);
-  addPart(group, _box1, wallMat, halfW * 0.56, wallH / 2 + 0.04, halfD, w * 0.42, wallH, 0.05);
-  addPart(group, _box1, mats.metalSteelMat, 0, wallH * 0.48 + 0.04, halfD, w * 0.34, wallH * 0.92, 0.035);
+
+  // Front wall segments leaving central entrance open (|x| <= 0.28u matching worldRegistry)
+  const gateHalf = 0.28;
+  const segLen = Math.max(0.18, halfW - gateHalf);
+  const segCenter = gateHalf + segLen * 0.5;
+  addPart(group, _box1, wallMat, -segCenter, wallH / 2 + 0.04, halfD, segLen, wallH, 0.05);
+  addPart(group, _box1, wallMat, segCenter, wallH / 2 + 0.04, halfD, segLen, wallH, 0.05);
+
+  // Stone gate pillars & open sliding gate parked neatly along left front wall
+  addPart(group, _box1, mats.concreteMat, -gateHalf, wallH * 0.65 + 0.04, halfD, 0.075, wallH * 1.3, 0.075);
+  addPart(group, _box1, mats.concreteMat, gateHalf, wallH * 0.65 + 0.04, halfD, 0.075, wallH * 1.3, 0.075);
+  addPart(
+    group,
+    _box1,
+    mats.metalSteelMat,
+    -gateHalf - 0.24,
+    wallH * 0.48 + 0.04,
+    halfD + 0.032,
+    0.46,
+    wallH * 0.9,
+    0.025,
+  );
 }
 
 function addBrazilianTree(
@@ -409,19 +427,71 @@ function addBrazilianTree(
   z: number,
   scale = 1,
 ) {
-  addPart(group, _cyl1, mats.woodMat, x, y + 0.16 * scale, z, 0.045 * scale, 0.32 * scale, 0.045 * scale);
-  addPart(group, _sphere1, mats.parkGrassMat, x, y + 0.38 * scale, z, 0.34 * scale, 0.24 * scale, 0.34 * scale);
+  const tree = new THREE.Group();
+  tree.position.set(x, y, z);
+
+  // Tapered main trunk
+  const trunk = new THREE.Mesh(_cyl1, mats.woodMat);
+  trunk.position.set(0, 0.16 * scale, 0);
+  trunk.scale.set(0.042 * scale, 0.34 * scale, 0.042 * scale);
+  trunk.castShadow = true;
+  trunk.receiveShadow = true;
+  tree.add(trunk);
+
+  // Two angled structural branch limbs
+  const limbA = new THREE.Mesh(_cyl1, mats.woodMat);
+  limbA.position.set(0.045 * scale, 0.27 * scale, 0.02 * scale);
+  limbA.rotation.z = -0.48;
+  limbA.rotation.x = 0.22;
+  limbA.scale.set(0.022 * scale, 0.16 * scale, 0.022 * scale);
+  limbA.castShadow = true;
+  tree.add(limbA);
+
+  const limbB = new THREE.Mesh(_cyl1, mats.woodMat);
+  limbB.position.set(-0.04 * scale, 0.26 * scale, -0.025 * scale);
+  limbB.rotation.z = 0.45;
+  limbB.rotation.x = -0.24;
+  limbB.scale.set(0.02 * scale, 0.15 * scale, 0.02 * scale);
+  limbB.castShadow = true;
+  tree.add(limbB);
+
+  // 4 overlapping irregular foliage canopy clusters
+  addPart(tree, _sphere1, mats.parkGrassMat, 0, 0.4 * scale, 0, 0.32 * scale, 0.24 * scale, 0.31 * scale);
   addPart(
-    group,
+    tree,
     _sphere1,
     mats.emeraldAccentMat,
-    x + 0.08 * scale,
-    y + 0.42 * scale,
-    z - 0.06 * scale,
-    0.24 * scale,
-    0.2 * scale,
-    0.24 * scale,
+    0.095 * scale,
+    0.37 * scale,
+    0.05 * scale,
+    0.23 * scale,
+    0.19 * scale,
+    0.22 * scale,
   );
+  addPart(
+    tree,
+    _sphere1,
+    mats.parkGrassMat,
+    -0.085 * scale,
+    0.38 * scale,
+    -0.06 * scale,
+    0.22 * scale,
+    0.18 * scale,
+    0.22 * scale,
+  );
+  addPart(
+    tree,
+    _sphere1,
+    mats.emeraldAccentMat,
+    0.01 * scale,
+    0.47 * scale,
+    -0.02 * scale,
+    0.21 * scale,
+    0.17 * scale,
+    0.2 * scale,
+  );
+
+  group.add(tree);
 }
 
 function addParkBench(
@@ -432,9 +502,21 @@ function addParkBench(
   z: number,
   ry = 0,
 ) {
-  addPart(group, _box1, mats.woodMat, x, y + 0.06, z, 0.24, 0.03, 0.09, ry);
-  addPart(group, _box1, mats.metalSteelMat, x - 0.09, y + 0.03, z, 0.025, 0.06, 0.08, ry);
-  addPart(group, _box1, mats.metalSteelMat, x + 0.09, y + 0.03, z, 0.025, 0.06, 0.08, ry);
+  const bench = new THREE.Group();
+  bench.position.set(x, y, z);
+  bench.rotation.y = ry;
+
+  // Seat planks aligned to WORLD_SCALE.benchSeatHeightU (~0.075u)
+  addPart(bench, _box1, mats.woodMat, 0, 0.072, -0.01, 0.25, 0.024, 0.085);
+  // Slatted backrest on +Z outer side so seated citizens face -Z
+  addPart(bench, _box1, mats.woodMat, 0, 0.125, 0.038, 0.24, 0.06, 0.02);
+  // Steel frame legs & side armrests
+  addPart(bench, _box1, mats.metalSteelMat, -0.098, 0.036, 0, 0.024, 0.072, 0.082);
+  addPart(bench, _box1, mats.metalSteelMat, 0.098, 0.036, 0, 0.024, 0.072, 0.082);
+  addPart(bench, _box1, mats.metalSteelMat, -0.115, 0.098, 0.004, 0.02, 0.018, 0.082);
+  addPart(bench, _box1, mats.metalSteelMat, 0.115, 0.098, 0.004, 0.02, 0.018, 0.082);
+
+  group.add(bench);
 }
 
 function addHedgeAndFlowerbed(
@@ -466,6 +548,7 @@ function addWindowWithTrim(
   shutterMat?: THREE.Material,
 ) {
   addPart(group, _box1, mats.concreteMat, x, y - h * 0.52, z + 0.015, w + 0.06, 0.03, 0.05);
+  addPart(group, _box1, mats.concreteMat, x, y + h * 0.52, z + 0.012, w + 0.05, 0.024, 0.042);
   addPart(group, _box1, winMat, x, y, z, w, h, 0.035);
   if (shutterMat) {
     addPart(group, _box1, shutterMat, x - w * 0.62, y, z + 0.006, 0.055, h, 0.025);
@@ -597,32 +680,40 @@ export function buildProceduralBuildingMesh(
     }
 
     case 'casa_popular': {
-      // Stylized Brazilian popular home with 4 distinct architectural variants, porch eaves, shutters, flowerbeds & rooftop water tank
-      const h = 0.52 + lvlBonus * 0.42;
+      // Pilot Neighborhood Home: masonry base plinth, framed door + stoop, flowerbox, veranda eaves & multi-cluster tree
+      const h = 0.54 + lvlBonus * 0.42;
       const variant = seed % 4;
-      const xShift = variant === 0 ? -0.1 : variant === 1 ? 0.1 : 0;
+      const xShift = variant === 0 ? -0.08 : variant === 1 ? 0.08 : 0;
       addPart(g, _bevelBox1, lawnMat, 0, 0.03, 0, 1.72, 0.06, 1.72);
-      addPart(g, _box1, mats.concreteMat, xShift, 0.055, 0.32, 0.62, 0.05, 0.96); // Front concrete walkway
+      addPart(g, _box1, mats.concreteMat, xShift * 0.5, 0.055, 0.38, 0.46, 0.045, 0.94); // Front walkway to open gate
       addPerimeterWallAndGate(g, mats, wallMat, 1.62, 1.62, 0.18);
 
-      // Main beveled house body + optional L-wing veranda
-      addPart(g, _bevelBox1, wallMat, xShift, 0.06 + h / 2, -0.08, 1.08, h, 0.94);
-      if (variant === 2) {
-        // Side porch with wooden posts & overhang
-        addPart(g, _bevelBox1, mats.concreteMat, 0, 0.08, 0.44, 0.96, 0.06, 0.24);
-        addPart(g, _cyl1, mats.woodMat, -0.4, 0.26, 0.52, 0.03, 0.34, 0.03);
-        addPart(g, _cyl1, mats.woodMat, 0.4, 0.26, 0.52, 0.03, 0.34, 0.03);
-        addPart(g, _box1, roofMat, 0, 0.44, 0.44, 1.02, 0.05, 0.28);
+      // Masonry plinth & main beveled house volume
+      addPart(g, _box1, mats.brickMat, xShift, 0.09, -0.08, 1.1, 0.08, 0.96);
+      addPart(g, _bevelBox1, wallMat, xShift, 0.08 + h / 2, -0.08, 1.08, h, 0.94);
+
+      if (variant === 2 || variant === 0) {
+        // Front shaded veranda porch with timber posts
+        addPart(g, _bevelBox1, mats.concreteMat, xShift, 0.085, 0.45, 0.92, 0.055, 0.24);
+        addPart(g, _cyl1, mats.woodMat, xShift - 0.38, 0.27, 0.52, 0.028, 0.34, 0.028);
+        addPart(g, _cyl1, mats.woodMat, xShift + 0.38, 0.27, 0.52, 0.028, 0.34, 0.028);
+        addPart(g, _box1, roofMat, xShift, 0.45, 0.46, 0.98, 0.045, 0.28);
       }
 
+      // Eaves cornice trim + pitched roof
+      addPart(g, _box1, mats.concreteMat, xShift, 0.075 + h, -0.08, 1.18, 0.04, 1.02);
       if (variant % 2 === 0) {
-        addPart(g, _gable1, roofMat, xShift, 0.06 + h, -0.08, 1.24, 0.4, 1.08);
+        addPart(g, _gable1, roofMat, xShift, 0.08 + h, -0.08, 1.24, 0.4, 1.08);
       } else {
-        addPart(g, _cone4, roofMat, xShift, 0.06 + h + 0.2, -0.08, 0.94, 0.42, 0.88, Math.PI / 4);
+        addPart(g, _cone4, roofMat, xShift, 0.08 + h + 0.2, -0.08, 0.94, 0.42, 0.88, Math.PI / 4);
       }
 
-      // Recessed door, window with shutters, & AC unit
-      addPart(g, _box1, mats.woodMat, xShift - 0.18, 0.25, 0.39, 0.2, 0.34, 0.04);
+      // Framed doorway (~2.1m real height) & front stoop step
+      addPart(g, _box1, mats.concreteMat, xShift - 0.18, 0.09, 0.44, 0.26, 0.05, 0.14);
+      addPart(g, _box1, mats.concreteMat, xShift - 0.18, 0.26, 0.385, 0.24, 0.37, 0.03);
+      addPart(g, _box1, mats.woodMat, xShift - 0.18, 0.255, 0.395, 0.19, 0.34, 0.035);
+
+      // Window with shutters & flowerbox planter
       addWindowWithTrim(
         g,
         mats,
@@ -634,61 +725,87 @@ export function buildProceduralBuildingMesh(
         0.19,
         variant === 3 ? mats.blueAccentMat : mats.woodMat,
       );
+      addPart(g, _box1, mats.brickMat, xShift + 0.2, 0.17, 0.425, 0.26, 0.05, 0.07);
+      addPart(g, _sphere1, mats.amberAccentMat, xShift + 0.15, 0.205, 0.425, 0.05, 0.04, 0.05);
+      addPart(g, _sphere1, mats.redAccentMat, xShift + 0.25, 0.205, 0.425, 0.05, 0.04, 0.05);
+
       if (seed % 2 === 1) {
         addPart(g, _box1, mats.concreteMat, xShift + 0.54, 0.34, -0.1, 0.08, 0.11, 0.14); // AC unit
       }
-      addPart(g, _cyl1, mats.blueAccentMat, xShift + 0.32, 0.06 + h + 0.14, -0.32, 0.12, 0.2, 0.12);
-      addHedgeAndFlowerbed(g, mats, -0.52, 0.05, 0.58, 0.36, 0.12, true);
-      if (seed % 3 === 1) {
-        addBrazilianTree(g, mats, -0.58, 0.05, -0.45, 0.72);
+      addPart(g, _cyl1, mats.blueAccentMat, xShift + 0.32, 0.08 + h + 0.14, -0.32, 0.12, 0.2, 0.12);
+      addHedgeAndFlowerbed(g, mats, -0.52, 0.05, 0.58, 0.34, 0.12, true);
+      if (seed % 3 !== 2) {
+        addBrazilianTree(g, mats, -0.56, 0.05, -0.46, 0.78);
       }
       break;
     }
 
     case 'casa_media': {
-      // Mid-to-high standard stylized Brazilian residence: walled garden, covered garage, upper glass balcony, pergola & varied roof
-      const h = 0.78 + lvlBonus * 0.52;
+      // Pilot Neighborhood Residence: two-tone warm facade, cornice trim, garage wing, upper glass balcony & pergola
+      const h = 0.8 + lvlBonus * 0.52;
       const variant = seed % 3;
       addPart(g, _bevelBox1, lawnMat, 0, 0.03, 0, 1.78, 0.06, 1.78);
-      addPart(g, _box1, mats.concreteMat, 0.45, 0.055, 0.24, 0.58, 0.05, 1.22); // Driveway
+      addPart(g, _box1, mats.concreteMat, 0.45, 0.055, 0.24, 0.56, 0.05, 1.22); // Driveway
+      addPart(g, _box1, mats.concreteMat, -0.08, 0.055, 0.56, 0.42, 0.045, 0.58); // Walk to front gate
       addPerimeterWallAndGate(g, mats, mats.concreteMat, 1.74, 1.74, 0.2);
-      addPart(g, _bevelBox1, wallMat, -0.18, 0.06 + h / 2, -0.06, 1.08, h, 1.08);
 
-      // Garage wing & pergola accent
+      // Lower masonry plinth + main upper facade
+      addPart(g, _box1, mats.brickMat, -0.18, 0.12, -0.06, 1.1, 0.12, 1.1);
+      addPart(g, _bevelBox1, wallMat, -0.18, 0.08 + h / 2, -0.06, 1.08, h, 1.08);
+      addPart(g, _box1, mats.concreteMat, -0.18, 0.08 + h, -0.06, 1.16, 0.045, 1.16);
+
+      // Framed wooden entry door on ground floor
+      addPart(g, _box1, mats.concreteMat, -0.18, 0.26, 0.485, 0.24, 0.38, 0.03);
+      addPart(g, _box1, mats.woodMat, -0.18, 0.255, 0.495, 0.19, 0.35, 0.035);
+
+      // Garage wing with ribbed metallic door
       addPart(g, _bevelBox1, mats.brickMat, 0.48, 0.27, 0.06, 0.48, 0.44, 0.86);
       addPart(g, _box1, mats.metalSteelMat, 0.48, 0.24, 0.5, 0.38, 0.34, 0.04);
-      // Upper balcony with glass railing & side shutters
-      addPart(g, _bevelBox1, mats.concreteMat, -0.18, 0.06 + h * 0.54, 0.54, 0.8, 0.06, 0.24);
-      addPart(g, _box1, mats.glassMat, -0.18, 0.06 + h * 0.64, 0.65, 0.76, 0.14, 0.025);
-      addWindowWithTrim(g, mats, winMat, -0.18, 0.06 + h * 0.56, 0.48, 0.82, h * 0.62, mats.woodMat);
+      addPart(g, _box1, mats.concreteMat, 0.48, 0.495, 0.06, 0.52, 0.04, 0.9);
+
+      // Upper balcony with glass railing & shuttered window
+      addPart(g, _bevelBox1, mats.concreteMat, -0.18, 0.08 + h * 0.54, 0.54, 0.82, 0.06, 0.24);
+      addPart(g, _box1, mats.glassMat, -0.18, 0.08 + h * 0.64, 0.65, 0.78, 0.14, 0.025);
+      addWindowWithTrim(g, mats, winMat, -0.18, 0.08 + h * 0.72, 0.48, 0.74, h * 0.32, mats.woodMat);
 
       if (variant === 0) {
-        addPart(g, _gable1, roofMat, -0.18, 0.06 + h, -0.06, 1.22, 0.42, 1.2);
+        addPart(g, _gable1, roofMat, -0.18, 0.08 + h, -0.06, 1.22, 0.42, 1.2);
       } else if (variant === 1) {
-        addPart(g, _bevelBox1, mats.slateRoofMat, -0.18, 0.06 + h + 0.06, -0.06, 1.2, 0.12, 1.2);
+        addPart(g, _bevelBox1, mats.slateRoofMat, -0.18, 0.08 + h + 0.06, -0.06, 1.2, 0.12, 1.2);
       } else {
-        addPart(g, _gable1, mats.terracottaRoofMat, -0.18, 0.06 + h, -0.06, 1.22, 0.34, 1.2);
-        addPart(g, _box1, mats.woodMat, 0.48, 0.52, 0.06, 0.5, 0.04, 0.9); // Pergola terrace
+        addPart(g, _gable1, mats.terracottaRoofMat, -0.18, 0.08 + h, -0.06, 1.22, 0.34, 1.2);
+        addPart(g, _box1, mats.woodMat, 0.48, 0.53, 0.06, 0.5, 0.04, 0.9); // Pergola terrace
       }
-      addHedgeAndFlowerbed(g, mats, -0.58, 0.05, 0.56, 0.42, 0.14, true);
-      addBrazilianTree(g, mats, -0.64, 0.05, -0.54, 0.82);
+      addHedgeAndFlowerbed(g, mats, -0.58, 0.05, 0.56, 0.4, 0.14, true);
+      addBrazilianTree(g, mats, -0.64, 0.05, -0.54, 0.88);
       break;
     }
 
     case 'condominio': {
-      // Multi-tower gated condominium: perimeter wall, guardhouse, landscaped pool deck, twin residential blocks with AC/balconies
-      const h = 1.05 + lvlBonus * 0.82;
+      // Pilot Neighborhood Condominium: portal entrance + guardhouse, twin balcony towers, pool deck with loungers & trees
+      const h = 1.08 + lvlBonus * 0.82;
       addPart(g, _box1, mats.concreteMat, 0, 0.04, 0, 1.84, 0.08, 1.84);
       addPerimeterWallAndGate(g, mats, mats.concreteMat, 1.8, 1.8, 0.24);
-      addPart(g, _box1, mats.concreteMat, 0, 0.22, 0.72, 0.38, 0.28, 0.24); // Guarita
+
+      // Guardhouse (guarita) with glass booth & canopy
+      addPart(g, _box1, mats.concreteMat, 0, 0.22, 0.72, 0.38, 0.28, 0.24);
+      addPart(g, _box1, mats.glassMat, 0, 0.26, 0.84, 0.28, 0.14, 0.025);
+      addPart(g, _box1, mats.slateRoofMat, 0, 0.38, 0.74, 0.46, 0.05, 0.32);
+
       for (const sx of [-0.46, 0.46]) {
         addPart(g, _box1, winMat, sx, 0.08 + h / 2, -0.12, 0.58, h, 1.18);
         addPart(g, _box1, wallMat, sx, 0.08 + h / 2, -0.12, 0.62, h * 0.96, 0.22);
+        addPart(g, _box1, mats.concreteMat, sx, 0.08 + h * 0.48, 0.5, 0.44, 0.05, 0.12);
+        addPart(g, _box1, mats.glassMat, sx, 0.08 + h * 0.55, 0.55, 0.42, 0.09, 0.02);
         addPart(g, _box1, roofMat, sx, 0.08 + h + 0.07, -0.12, 0.64, 0.14, 1.26);
         addPart(g, _cyl1, mats.blueAccentMat, sx + 0.1, 0.08 + h + 0.2, -0.35, 0.12, 0.16, 0.12);
       }
-      addPart(g, _box1, mats.waterPoolMat, 0, 0.09, 0.08, 0.28, 0.03, 0.56);
-      addBrazilianTree(g, mats, 0, 0.07, -0.52, 0.85);
+
+      // Central pool deck with water + loungers & parasol
+      addPart(g, _box1, mats.waterPoolMat, 0, 0.09, 0.06, 0.26, 0.03, 0.54);
+      addPart(g, _box1, mats.woodMat, -0.07, 0.095, -0.32, 0.1, 0.03, 0.16);
+      addPart(g, _box1, mats.woodMat, 0.08, 0.095, -0.32, 0.1, 0.03, 0.16);
+      addBrazilianTree(g, mats, 0, 0.07, -0.62, 0.88);
       break;
     }
 
@@ -713,14 +830,26 @@ export function buildProceduralBuildingMesh(
     }
 
     case 'padaria': {
-      const h = 0.64 + lvlBonus * 0.35;
-      addPart(g, _box1, mats.concreteMat, 0, 0.04, 0, 1.68, 0.08, 1.68);
-      addPart(g, _box1, mats.brickMat, 0, 0.08 + h / 2, -0.06, 1.32, h, 1.12);
-      addPart(g, _box1, mats.amberAccentMat, 0, 0.38, 0.58, 1.24, 0.09, 0.26); // Striped awning
-      addPart(g, _box1, operational ? mats.nightGlowMat : mats.glassMat, 0, 0.23, 0.51, 1.0, 0.28, 0.04);
-      addPart(g, _box1, mats.redAccentMat, 0, 0.52, 0.54, 0.88, 0.12, 0.05); // Signboard
-      addPart(g, _gable1, mats.terracottaRoofMat, 0, 0.08 + h, -0.06, 1.4, 0.32, 1.2);
+      // Pilot Neighborhood Bakery: warm brick & stucco body, striped awning, glazed storefront, café terrace umbrella & oven chimney
+      const h = 0.66 + lvlBonus * 0.35;
+      addPart(g, _box1, mats.concreteMat, 0, 0.04, 0, 1.72, 0.08, 1.72);
+      addPart(g, _box1, mats.brickMat, 0, 0.08 + h / 2, -0.08, 1.34, h, 1.08);
+      addPart(g, _box1, mats.stuccoWarmMats[0], 0, 0.08 + h * 0.72, -0.08, 1.37, h * 0.34, 1.11);
+
+      // Striped terracotta/cream storefront awning & warm lit display window
+      addPart(g, _box1, mats.amberAccentMat, 0, 0.39, 0.56, 1.24, 0.08, 0.26);
+      addPart(g, _box1, mats.stuccoWarmMats[0], -0.32, 0.395, 0.56, 0.22, 0.085, 0.265);
+      addPart(g, _box1, mats.stuccoWarmMats[0], 0.32, 0.395, 0.56, 0.22, 0.085, 0.265);
+      addPart(g, _box1, operational ? mats.nightGlowMat : mats.glassMat, -0.14, 0.24, 0.47, 0.68, 0.26, 0.04);
+      addPart(g, _box1, mats.woodMat, 0.38, 0.24, 0.47, 0.2, 0.34, 0.04); // Framed bakery entrance door
+      addPart(g, _box1, mats.redAccentMat, 0, 0.53, 0.51, 0.9, 0.12, 0.05); // Signboard
+      addPart(g, _gable1, mats.terracottaRoofMat, 0, 0.08 + h, -0.08, 1.42, 0.32, 1.18);
       addPart(g, _cyl1, mats.brickMat, -0.4, 0.08 + h + 0.24, -0.32, 0.11, 0.38, 0.11);
+
+      // Sidewalk café bistro table & umbrella on front terrace
+      addPart(g, _cyl1, mats.woodMat, -0.44, 0.14, 0.68, 0.13, 0.025, 0.13);
+      addPart(g, _cyl1, mats.metalSteelMat, -0.44, 0.22, 0.68, 0.022, 0.28, 0.022);
+      addPart(g, _coneRound, mats.redAccentMat, -0.44, 0.38, 0.68, 0.22, 0.11, 0.22);
       break;
     }
 
@@ -889,12 +1018,19 @@ export function buildProceduralBuildingMesh(
     }
 
     case 'praca': {
-      addPart(g, _bevelBox1, mats.concreteMat, 0, 0.04, 0, 1.84, 0.08, 1.84);
-      addPart(g, _bevelBox1, lawnMat, 0, 0.085, 0, 1.46, 0.03, 1.46);
-      addPart(g, _cyl1, mats.concreteMat, 0, 0.16, 0, 0.38, 0.16, 0.38);
-      addPart(g, _cyl1, mats.waterPoolMat, 0, 0.25, 0, 0.3, 0.04, 0.3);
-      addPart(g, _cyl1, mats.concreteMat, 0, 0.36, 0, 0.08, 0.24, 0.08);
-      // Park benches facing central fountain
+      // Pilot Neighborhood Plaza: stone crosspaths, tiered fountain, slatted benches & 4 organic multi-cluster trees
+      addPart(g, _bevelBox1, mats.concreteMat, 0, 0.04, 0, 1.86, 0.08, 1.86);
+      addPart(g, _bevelBox1, lawnMat, 0, 0.082, 0, 1.48, 0.028, 1.48);
+      // Stone crosspaths connecting all 4 street edges to central fountain circle
+      addPart(g, _box1, mats.concreteMat, 0, 0.095, 0, 0.34, 0.018, 1.82);
+      addPart(g, _box1, mats.concreteMat, 0, 0.095, 0, 1.82, 0.018, 0.34);
+      addPart(g, _cyl1, mats.concreteMat, 0, 0.096, 0, 0.42, 0.02, 0.42);
+      // Tiered central stone fountain
+      addPart(g, _cyl1, mats.concreteMat, 0, 0.16, 0, 0.38, 0.14, 0.38);
+      addPart(g, _cyl1, mats.waterPoolMat, 0, 0.24, 0, 0.31, 0.036, 0.31);
+      addPart(g, _cyl1, mats.concreteMat, 0, 0.36, 0, 0.085, 0.24, 0.085);
+      addPart(g, _cyl1, mats.concreteMat, 0, 0.43, 0, 0.15, 0.03, 0.15);
+      // Park benches facing central fountain (aligned with worldRegistry InteractionSpots)
       addParkBench(g, mats, 0, 0.09, 0.5, 0);
       addParkBench(g, mats, 0, 0.09, -0.5, Math.PI);
       addParkBench(g, mats, 0.5, 0.09, 0, Math.PI / 2);

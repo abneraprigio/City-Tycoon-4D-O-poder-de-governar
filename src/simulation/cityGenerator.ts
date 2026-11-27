@@ -118,6 +118,7 @@ export function createCitizenAgent(
     yaw: (index % 4) * (Math.PI / 2),
     currentSpeed: 0,
     decisionCooldown: (index % 5) * 0.12,
+    appearanceSeed: index * 7919 + 17,
     history: ['Morador(a) fundador(a) de Nova Aurora.'],
   };
 
@@ -258,18 +259,23 @@ export function createInitialCitizens(tiles: TileData[]): CitizenAgent[] {
     const hasJob = i < 30 && workplaces.length > 0;
     const work = hasJob ? workplaces[i % workplaces.length] : null;
     const access = computeBuildingAccess(tiles, home);
-    const jitter = ((i % 5) - 2) * 0.06;
-    agents.push(
-      createCitizenAgent(
-        i,
-        homeKey,
-        work?.building?.id || null,
-        work ? BUILDING_CATALOG[work.building!.type].name : null,
-        access.sidewalkPoint.x + jitter,
-        access.sidewalkPoint.z - jitter,
-        home.building?.id || null,
-      ),
+    const roadDirX = access.adjacentRoadTile ? access.adjacentRoadTile.x - home.x : 0;
+    const roadDirZ = access.adjacentRoadTile ? access.adjacentRoadTile.z - home.z : 1;
+    // Tangent parallel to the sidewalk curb so jitter never pushes into fences or asphalt
+    const tanX = -roadDirZ;
+    const tanZ = roadDirX;
+    const tangentJitter = ((i % 5) - 2) * 0.055;
+    const agent = createCitizenAgent(
+      i,
+      homeKey,
+      work?.building?.id || null,
+      work ? BUILDING_CATALOG[work.building!.type].name : null,
+      access.sidewalkPoint.x + tanX * tangentJitter,
+      access.sidewalkPoint.z + tanZ * tangentJitter,
+      home.building?.id || null,
     );
+    agent.yaw = Math.atan2(tanX || 1, tanZ || 0);
+    agents.push(agent);
   }
   return agents;
 }

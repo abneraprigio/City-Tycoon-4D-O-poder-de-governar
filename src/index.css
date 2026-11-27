@@ -5,6 +5,15 @@
     --font-display: 'Chakra Petch', sans-serif;
     --font-sans: 'Plus Jakarta Sans', system-ui, sans-serif;
     --font-mono: 'JetBrains Mono', monospace;
+
+    --surface-paper: #F2F0E8;
+    --surface-paper-muted: #E6E2D6;
+    --surface-border: #CBC5B5;
+    --ink-graphite: #283B49;
+    --ink-muted: #536877;
+    --accent-civic: #496B57;
+    --accent-sky: #8FB7CE;
+    --accent-wood: #D2A97B;
   }
 
   html,
@@ -16,8 +25,8 @@
     padding: 0;
     overflow: hidden;
     font-family: var(--font-sans);
-    background-color: #090e17;
-    color: #f1f5f9;
+    background-color: #283B49;
+    color: #283B49;
   }
 }
 
@@ -30,21 +39,21 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Custom slim scrollbars for HUD drawers */
+/* Custom slim scrollbars for humanized paper HUD drawers */
 .hud-scroll::-webkit-scrollbar {
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
 }
 
 .hud-scroll::-webkit-scrollbar-track {
-  background: rgba(15, 23, 42, 0.4);
+  background: rgba(203, 197, 181, 0.35);
 }
 
 .hud-scroll::-webkit-scrollbar-thumb {
-  background: rgba(100, 116, 139, 0.5);
+  background: rgba(40, 59, 73, 0.35);
   border-radius: 3px;
 }
 
 .hud-scroll::-webkit-scrollbar-thumb:hover {
-  background: rgba(148, 163, 184, 0.75);
+  background: rgba(40, 59, 73, 0.55);
 }

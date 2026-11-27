@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildFreshCityState,
+  evaluateBuildPlacement,
   hydrateFromSnapshot,
   useGameStore,
 } from '../src/store/useGameStore';
@@ -9,9 +10,16 @@ import { getTile } from '../src/simulation/tickEngine';
 import { UrbanNavigationCache } from '../src/simulation/navigation/routeCache';
 import { findNearestPedestrianNode } from '../src/simulation/navigation/pedestrianGraph';
 import { isPointBlockedForPedestrian, tileKey } from '../src/simulation/navigation/obstacleSystem';
+import {
+  findAvailableInteractionSpot,
+  reserveInteractionSpot,
+  sweepSegmentCapsule,
+} from '../src/simulation/navigation/worldRegistry';
+import { WORLD_SCALE, getCitizenHeightWorld } from '../src/simulation/worldScale';
 import { reconcileHouseholds, getResidenceCapacity } from '../src/simulation/agents/householdEngine';
 import { reconcileWorkplaces, getWorkplaceSlotCapacity } from '../src/simulation/agents/employmentEngine';
 import { stepCitizenEcosystem } from '../src/simulation/agents/citizenEngine';
+import { stepCitizenBehaviorAndMotion } from '../src/simulation/agents/citizenStateMachine';
 import {
   createInitialTrafficState,
   stepTrafficEngine,
@@ -435,3 +443,331 @@ test('10. Retrocompatibilidade: hydrateFromSnapshot aceita saves legados v2 sem 
   assert.ok(hydrated.households.length >= 1, 'Households devem ser reconstruídos no hydrate');
   assert.ok(hydrated.citizens.every((c) => Boolean(c.personality && c.scheduleProfile)));
 });
+
+test('11. SweepSegmentCapsule garante trajeto casa-trabalho sem atravessar muros, árvores, postes ou prédios', () => {
+  const fresh = buildFreshCityState('Teste Colisão Contínua', 'Prefeito');
+  const cache = new UrbanNavigationCache();
+  cache.ensureFresh(fresh.tiles, 1);
+
+  const residence = fresh.tiles.find((t) => t.building?.type === 'casa_popular')!;
+  const workplace = fresh.tiles.find((t) => t.building?.type === 'padaria')!;
+  const startId = cache.pedestrianGraph.buildingEntranceNode.get(residence.building!.id)!;
+  const goalId = cache.pedestrianGraph.buildingEntranceNode.get(workplace.building!.id)!;
+  const route = cache.getPedestrianPath(startId, goalId);
+  assert.equal(route.found, true);
+  assert.ok(route.points.length >= 2);
+
+  for (let i = 0; i < route.points.length - 1; i++) {
+    const a = route.points[i];
+    const b = route.points[i + 1];
+    const swept = sweepSegmentCapsule(
+      cache.worldRegistry,
+      fresh.tiles,
+      a.x,
+      a.z,
+      b.x,
+      b.z,
+      WORLD_SCALE.pedestrianRadiusTile * 0.85,
+      {
+        allowedBuildingId: i === 0 ? residence.building!.id : workplace.building!.id,
+        allowDirectCenterEntry: i === 0 || i === route.points.length - 2,
+      },
+    );
+    assert.equal(
+      swept.hit,
+      false,
+      `Segmento ${i} (${a.x.toFixed(2)},${a.z.toFixed(2)})->(${b.x.toFixed(2)},${b.z.toFixed(2)}) colidiu com ${swept.hitObjectId} (${swept.reason})`,
+    );
+  }
+});
+
+test('12. Dois pedestres em sentido oposto mantêm separação e não se atravessam', () => {
+  const fresh = buildFreshCityState('Teste Separação NPCs', 'Prefeito');
+  const cache = new UrbanNavigationCache();
+  cache.ensureFresh(fresh.tiles, 1);
+  const cfg = createDefaultTimeConfig();
+
+  // Clear avenue sidewalk stretch along z=11 (x=9 -> x=13)
+  const a: CitizenAgent = {
+    ...fresh.citizens[0],
+    id: 'ped_sep_a',
+    insideBuildingId: null,
+    x: 10.0,
+    z: 11 + WORLD_SCALE.sidewalkWalkableOffsetTile,
+    lastValidX: 10.0,
+    lastValidZ: 11 + WORLD_SCALE.sidewalkWalkableOffsetTile,
+    path: [{ x: 11.2, z: 11 + WORLD_SCALE.sidewalkWalkableOffsetTile }],
+    pathIndex: 0,
+    behaviorState: 'WalkingToDestination',
+    movementState: 'walking',
+    animState: 'Walk',
+    currentSpeed: 0.18,
+    decisionCooldown: 5,
+    activityUntilHour: 0,
+  };
+  const b: CitizenAgent = {
+    ...fresh.citizens[1],
+    id: 'ped_sep_b',
+    insideBuildingId: null,
+    x: 10.42,
+    z: 11 + WORLD_SCALE.sidewalkWalkableOffsetTile,
+    lastValidX: 10.42,
+    lastValidZ: 11 + WORLD_SCALE.sidewalkWalkableOffsetTile,
+    path: [{ x: 9.2, z: 11 + WORLD_SCALE.sidewalkWalkableOffsetTile }],
+    pathIndex: 0,
+    behaviorState: 'WalkingToDestination',
+    movementState: 'walking',
+    animState: 'Walk',
+    currentSpeed: 0.18,
+    decisionCooldown: 5,
+    activityUntilHour: 0,
+  };
+
+  let minSeparation = Infinity;
+  for (let step = 0; step < 30; step++) {
+    stepCitizenBehaviorAndMotion(
+      a,
+      [a, b],
+      fresh.tiles,
+      cache,
+      10,
+      2,
+      0.08,
+      0.002,
+      cfg,
+      fresh.indicators,
+      fresh.economy,
+      false,
+      false,
+      [],
+    );
+    stepCitizenBehaviorAndMotion(
+      b,
+      [a, b],
+      fresh.tiles,
+      cache,
+      10,
+      2,
+      0.08,
+      0.002,
+      cfg,
+      fresh.indicators,
+      fresh.economy,
+      false,
+      false,
+      [],
+    );
+    const sep = Math.hypot(a.x - b.x, a.z - b.z);
+    if (sep < minSeparation) minSeparation = sep;
+  }
+
+  assert.ok(
+    minSeparation >= 0.08,
+    `Pedestres devem manter separação mínima sem sobreposição severa (mínimo observado: ${minSeparation.toFixed(3)})`,
+  );
+});
+
+test('13. Banco de praça usa InteractionSpot exclusivo e ativa animação Sit ao sentar', () => {
+  const fresh = buildFreshCityState('Teste Banco Praça', 'Prefeito');
+  const cache = new UrbanNavigationCache();
+  cache.ensureFresh(fresh.tiles, 1);
+  const cfg = createDefaultTimeConfig();
+
+  const pracaTile = fresh.tiles.find((t) => t.building?.type === 'praca')!;
+  const pracaId = pracaTile.building!.id;
+  const spot1 = findAvailableInteractionSpot(cache.worldRegistry, pracaId, 'seat', 'cit_bench_1')!;
+  assert.ok(spot1, 'Praça deve possuir assentos registrados');
+  assert.equal(reserveInteractionSpot(cache.worldRegistry, spot1.id, 'cit_bench_1'), true);
+  // Second citizen cannot steal the exact same reserved seat
+  const spot2 = findAvailableInteractionSpot(cache.worldRegistry, pracaId, 'seat', 'cit_bench_2')!;
+  assert.ok(spot2 && spot2.id !== spot1.id, 'Segundo cidadão deve receber outro banco livre');
+
+  const sitter: CitizenAgent = {
+    ...fresh.citizens[0],
+    id: 'cit_bench_1',
+    insideBuildingId: null,
+    targetBuildingId: pracaId,
+    occupiedSpotId: spot1.id,
+    sittingYaw: spot1.yaw,
+    intent: 'socialize',
+    activityMinDurationHours: 1.2,
+    x: spot1.approachX,
+    z: spot1.approachZ,
+    lastValidX: spot1.approachX,
+    lastValidZ: spot1.approachZ,
+    path: [{ x: spot1.approachX, z: spot1.approachZ }],
+    pathIndex: 0,
+    behaviorState: 'WalkingToDestination',
+    movementState: 'walking',
+    animState: 'Walk',
+    currentSpeed: 0.14,
+    decisionCooldown: 5,
+  };
+
+  stepCitizenBehaviorAndMotion(
+    sitter,
+    [sitter],
+    fresh.tiles,
+    cache,
+    15,
+    2,
+    0.1,
+    0.005,
+    cfg,
+    fresh.indicators,
+    fresh.economy,
+    false,
+    false,
+    [],
+  );
+
+  assert.equal(sitter.animState, 'Sit');
+  assert.equal(sitter.insideBuildingId, null);
+  assert.equal(sitter.movementState, 'stopped');
+  assert.ok(Math.hypot(sitter.x - spot1.x, sitter.z - spot1.z) < 0.05);
+});
+
+test('14. Pedestre na faixa reduz velocidade e aguarda veículo próximo', () => {
+  const fresh = buildFreshCityState('Teste Faixa Pedestre', 'Prefeito');
+  const cache = new UrbanNavigationCache();
+  cache.ensureFresh(fresh.tiles, 1);
+  const cfg = createDefaultTimeConfig();
+
+  const cwSeg = cache.pedestrianGraph.crosswalkSegments[0];
+  assert.ok(cwSeg, 'Deve existir segmento de faixa de pedestre');
+  const cwX = (cwSeg.ax + cwSeg.bx) * 0.5;
+  const cwZ = (cwSeg.az + cwSeg.bz) * 0.5;
+
+  const ped: CitizenAgent = {
+    ...fresh.citizens[0],
+    id: 'ped_cw',
+    insideBuildingId: null,
+    x: cwX,
+    z: cwZ,
+    lastValidX: cwX,
+    lastValidZ: cwZ,
+    path: [{ x: cwSeg.bx, z: cwSeg.bz }],
+    pathIndex: 0,
+    behaviorState: 'WalkingToDestination',
+    movementState: 'walking',
+    animState: 'Walk',
+    currentSpeed: 0.18,
+    decisionCooldown: 5,
+  };
+
+  const oncomingVehicle = {
+    id: 'veh_cw_test',
+    role: 'commuter' as const,
+    color: 0x3b82f6,
+    x: cwX,
+    z: cwZ - 0.3,
+    yaw: 0, // Moving toward +Z (+dirZ) right into pedestrian
+    speed: 0.85,
+    maxSpeed: 1.0,
+    originTileKey: '11,9',
+    destTileKey: '11,13',
+    path: [],
+    pathIndex: 0,
+    waitingAtSignal: false,
+    waitingForCrosswalk: false,
+    braking: false,
+    stoppedTime: 0,
+  };
+
+  stepCitizenBehaviorAndMotion(
+    ped,
+    [ped],
+    fresh.tiles,
+    cache,
+    10,
+    2,
+    0.1,
+    0.005,
+    cfg,
+    fresh.indicators,
+    fresh.economy,
+    false,
+    false,
+    [oncomingVehicle],
+  );
+
+  assert.equal(ped.animState, 'Wait');
+  assert.equal(ped.behaviorState, 'CrossingStreet');
+  assert.equal(ped.currentSpeed, 0);
+});
+
+test('15. Build UX: evaluateBuildPlacement, Undo anti-exploit e confirmação de demolição funcionam', () => {
+  resetStore();
+  const s0 = useGameStore.getState();
+  // Find an empty lot adjacent to a starter road
+  const emptyLot = s0.tiles.find(
+    (t) =>
+      !t.building &&
+      t.road === 'none' &&
+      t.terrain !== 'waterfront' &&
+      !t.conflict &&
+      (t.ownerType === 'available' || t.ownerType === 'public') &&
+      s0.tiles.some((nb) => nb.road !== 'none' && Math.abs(nb.x - t.x) + Math.abs(nb.z - t.z) === 1),
+  )!;
+  assert.ok(emptyLot, 'Deve existir lote livre adjacente a via para teste');
+
+  const evalRes = evaluateBuildPlacement(
+    s0.tiles,
+    emptyLot.x,
+    emptyLot.z,
+    'casa_popular',
+    s0.economy.treasury,
+    s0.developmentLevel,
+    false,
+    0,
+  );
+  assert.equal(evalRes.valid, true);
+  assert.ok(evalRes.totalCost > 0);
+
+  const treasuryBefore = s0.economy.treasury;
+  s0.setActiveTool('build', 'casa_popular');
+  s0.interactWithTile(emptyLot.x, emptyLot.z);
+
+  const afterBuild = useGameStore.getState();
+  const builtTile = getTile(afterBuild.tiles, emptyLot.x, emptyLot.z)!;
+  assert.equal(builtTile.building?.type, 'casa_popular');
+  assert.equal(afterBuild.buildUndoStack.length, 1);
+  assert.equal(afterBuild.economy.treasury, treasuryBefore - evalRes.totalCost);
+
+  // Undo immediately refunds exact amount
+  afterBuild.undoLastBuild();
+  const afterUndo = useGameStore.getState();
+  assert.equal(getTile(afterUndo.tiles, emptyLot.x, emptyLot.z)!.building, null);
+  assert.equal(afterUndo.economy.treasury, treasuryBefore);
+
+  // Rebuild and advance day -> anti-exploit clears Undo stack
+  afterUndo.setActiveTool('build', 'casa_popular');
+  afterUndo.interactWithTile(emptyLot.x, emptyLot.z);
+  assert.equal(useGameStore.getState().buildUndoStack.length, 1);
+  useGameStore.getState().advanceToNextDay();
+  assert.equal(useGameStore.getState().buildUndoStack.length, 0);
+  useGameStore.getState().undoLastBuild();
+  assert.equal(getTile(useGameStore.getState().tiles, emptyLot.x, emptyLot.z)!.building?.type, 'casa_popular');
+
+  // Request & confirm demolition modal flow
+  useGameStore.getState().requestDemolition(emptyLot.x, emptyLot.z);
+  assert.ok(useGameStore.getState().pendingDemolition);
+  useGameStore.getState().confirmDemolition();
+  assert.equal(useGameStore.getState().pendingDemolition, null);
+  assert.equal(getTile(useGameStore.getState().tiles, emptyLot.x, emptyLot.z)!.building, null);
+});
+
+test('16. Escala métrica e estado inicial humanizado mantêm viewport aberto (>= 80%) e proporções reais', () => {
+  resetStore();
+  const s = useGameStore.getState();
+  assert.equal(s.activeLeftTab, null, 'Dock esquerdo inicia fechado para viewport >= 80% livre');
+  const adultH = getCitizenHeightWorld(30, 17);
+  const childH = getCitizenHeightWorld(10, 17);
+  assert.ok(adultH > childH, 'Adulto deve ser mais alto que criança em metros');
+  assert.ok(
+    adultH >= 0.24 && adultH <= 0.34,
+    `Altura adulta em unidades Three.js (${adultH.toFixed(3)}u) deve respeitar escala 1u=6m`,
+  );
+  assert.ok(WORLD_SCALE.vehicleSpecs.bus.length > WORLD_SCALE.vehicleSpecs.sedan.length);
+});
+

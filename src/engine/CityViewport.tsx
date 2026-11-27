@@ -14,7 +14,7 @@ import {
   ThematicMapMode,
   TileData,
 } from '../types/game';
-import { getNavigationCache, useGameStore } from '../store/useGameStore';
+import { evaluateBuildPlacement, getNavigationCache, useGameStore } from '../store/useGameStore';
 import {
   CityAssetManager,
   LOCAL_ASSET_MANIFEST,
@@ -343,13 +343,47 @@ export const CityViewport: React.FC = () => {
     const ghostPadMat = new THREE.MeshBasicMaterial({
       color: 0x22c55e,
       transparent: true,
-      opacity: 0.38,
+      opacity: 0.28,
       depthWrite: false,
     });
     const ghostPad = new THREE.Mesh(ghostPadGeo, ghostPadMat);
     ghostPad.rotation.x = -Math.PI / 2;
     ghostPad.position.y = 0.03;
     ghostHolder.add(ghostPad);
+
+    const halfPad = TILE_WORLD_SIZE * 0.48;
+    const ghostOutlineGeo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(-halfPad, 0.055, -halfPad),
+      new THREE.Vector3(halfPad, 0.055, -halfPad),
+      new THREE.Vector3(halfPad, 0.055, halfPad),
+      new THREE.Vector3(-halfPad, 0.055, halfPad),
+    ]);
+    const ghostOutlineMat = new THREE.LineBasicMaterial({ color: 0x22c55e });
+    const ghostOutline = new THREE.LineLoop(ghostOutlineGeo, ghostOutlineMat);
+    ghostHolder.add(ghostOutline);
+
+    // 3D Facade Orientation Arrow (points out of front entrance +Z in local mesh space)
+    const ghostArrowGroup = new THREE.Group();
+    const arrowMat = new THREE.MeshBasicMaterial({
+      color: 0xf59e0b,
+      transparent: true,
+      opacity: 0.92,
+      depthWrite: false,
+    });
+    const arrowShaftGeo = new THREE.BoxGeometry(0.11, 0.05, 0.36);
+    const arrowShaft = new THREE.Mesh(arrowShaftGeo, arrowMat);
+    arrowShaft.position.set(0, 0.08, halfPad + 0.14);
+    const arrowHeadGeo = new THREE.ConeGeometry(0.16, 0.28, 4);
+    const arrowHead = new THREE.Mesh(arrowHeadGeo, arrowMat);
+    arrowHead.rotation.x = Math.PI / 2;
+    arrowHead.rotation.y = Math.PI / 4;
+    arrowHead.position.set(0, 0.08, halfPad + 0.42);
+    ghostArrowGroup.add(arrowShaft, arrowHead);
+    ghostHolder.add(ghostArrowGroup);
+
+    const ghostBuildingGroup = new THREE.Group();
+    ghostHolder.add(ghostBuildingGroup);
+    const ghostClonedMaterials: THREE.Material[] = [];
 
     // Citizen planned route visual ribbon
     const routeGeo = new THREE.BufferGeometry();
@@ -362,20 +396,45 @@ export const CityViewport: React.FC = () => {
     routeLine.visible = false;
     scene.add(routeLine);
 
-    // Optional Diagnostics Overlay (PedestrianGraph & RoadGraph)
+    // Optional Diagnostics Overlay (WorldRegistry Colliders, Graphs, Spots, NPC Capsules & Trails)
     const debugGroup = new THREE.Group();
     debugGroup.visible = false;
     scene.add(debugGroup);
-    const pedDebugMat = new THREE.LineBasicMaterial({ color: 0x22c55e, transparent: true, opacity: 0.55 });
-    const roadDebugMat = new THREE.LineBasicMaterial({ color: 0xf59e0b, transparent: true, opacity: 0.7 });
+    const debugDynamicGroup = new THREE.Group();
+    debugGroup.add(debugDynamicGroup);
+
+    const pedDebugMat = new THREE.LineBasicMaterial({ color: 0x22c55e, transparent: true, opacity: 0.65 });
+    const roadDebugMat = new THREE.LineBasicMaterial({ color: 0xf59e0b, transparent: true, opacity: 0.72 });
+    const colliderDebugMat = new THREE.LineBasicMaterial({ color: 0xef4444, transparent: true, opacity: 0.78 });
+    const spotDebugMat = new THREE.LineBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.9 });
+    const npcCapsuleDebugMat = new THREE.LineBasicMaterial({ color: 0x06b6d4, transparent: true, opacity: 0.85 });
+    const npcTrailDebugMat = new THREE.LineBasicMaterial({ color: 0xa855f7, transparent: true, opacity: 0.75 });
+    const collisionHitDebugMat = new THREE.LineBasicMaterial({ color: 0xff2244, transparent: true, opacity: 0.95 });
+
+    const dynNpcGeo = new THREE.BufferGeometry();
+    const dynTrailGeo = new THREE.BufferGeometry();
+    const dynHitGeo = new THREE.BufferGeometry();
+    const dynNpcLines = new THREE.LineSegments(dynNpcGeo, npcCapsuleDebugMat);
+    const dynTrailLines = new THREE.LineSegments(dynTrailGeo, npcTrailDebugMat);
+    const dynHitLines = new THREE.LineSegments(dynHitGeo, collisionHitDebugMat);
+    dynNpcLines.frustumCulled = false;
+    dynTrailLines.frustumCulled = false;
+    dynHitLines.frustumCulled = false;
+    debugDynamicGroup.add(dynNpcLines, dynTrailLines, dynHitLines);
+
     let lastDebugGridVersion = -1;
 
     const rebuildDebugGraphLines = () => {
-      while (debugGroup.children.length > 0) {
-        const ch = debugGroup.children[0] as THREE.LineSegments;
-        ch.geometry.dispose();
+      // Remove static debug line segments while keeping debugDynamicGroup
+      for (let i = debugGroup.children.length - 1; i >= 0; i--) {
+        const ch = debugGroup.children[i];
+        if (ch === debugDynamicGroup) continue;
+        if ((ch as THREE.LineSegments).geometry) {
+          (ch as THREE.LineSegments).geometry.dispose();
+        }
         debugGroup.remove(ch);
       }
+
       const nav = getNavigationCache();
       const pedVerts: number[] = [];
       for (const node of nav.pedestrianGraph.nodes.values()) {
@@ -384,7 +443,7 @@ export const CityViewport: React.FC = () => {
           const nb = nav.pedestrianGraph.nodes.get(edge.to);
           if (!nb || node.id > nb.id) continue;
           const [bx, bz] = tileToWorld(nb.x, nb.z);
-          pedVerts.push(ax, 0.24, az, bx, 0.24, bz);
+          pedVerts.push(ax, 0.22, az, bx, 0.22, bz);
         }
       }
       if (pedVerts.length > 0) {
@@ -400,7 +459,7 @@ export const CityViewport: React.FC = () => {
           const nb = nav.roadGraph.nodes.get(nk);
           if (!nb || rn.id > nb.id) continue;
           const [bx, bz] = tileToWorld(nb.x, nb.z);
-          roadVerts.push(ax, 0.28, az, bx, 0.28, bz);
+          roadVerts.push(ax, 0.27, az, bx, 0.27, bz);
         }
       }
       if (roadVerts.length > 0) {
@@ -408,6 +467,133 @@ export const CityViewport: React.FC = () => {
         gRoad.setAttribute('position', new THREE.Float32BufferAttribute(roadVerts, 3));
         debugGroup.add(new THREE.LineSegments(gRoad, roadDebugMat));
       }
+
+      // WorldRegistry solid physical colliders (OBBs & circles)
+      const colVerts: number[] = [];
+      for (const obj of nav.worldRegistry.objects) {
+        if (obj.walkable) continue;
+        const [wx, wz] = tileToWorld(obj.x, obj.z);
+        const y = 0.26;
+        if (obj.shape === 'circle') {
+          const r = obj.radius * TILE_WORLD_SIZE;
+          const segs = 12;
+          for (let i = 0; i < segs; i++) {
+            const a0 = (i / segs) * Math.PI * 2;
+            const a1 = ((i + 1) / segs) * Math.PI * 2;
+            colVerts.push(
+              wx + Math.cos(a0) * r, y, wz + Math.sin(a0) * r,
+              wx + Math.cos(a1) * r, y, wz + Math.sin(a1) * r,
+            );
+          }
+        } else {
+          const hw = obj.halfW * TILE_WORLD_SIZE;
+          const hd = obj.halfD * TILE_WORLD_SIZE;
+          const c = Math.cos(obj.rotationRad);
+          const s = Math.sin(obj.rotationRad);
+          const rotPt = (lx: number, lz: number): [number, number] => [
+            wx + lx * c + lz * s,
+            wz - lx * s + lz * c,
+          ];
+          const p0 = rotPt(-hw, -hd);
+          const p1 = rotPt(hw, -hd);
+          const p2 = rotPt(hw, hd);
+          const p3 = rotPt(-hw, hd);
+          colVerts.push(
+            p0[0], y, p0[1], p1[0], y, p1[1],
+            p1[0], y, p1[1], p2[0], y, p2[1],
+            p2[0], y, p2[1], p3[0], y, p3[1],
+            p3[0], y, p3[1], p0[0], y, p0[1],
+          );
+        }
+      }
+      if (colVerts.length > 0) {
+        const gCol = new THREE.BufferGeometry();
+        gCol.setAttribute('position', new THREE.Float32BufferAttribute(colVerts, 3));
+        debugGroup.add(new THREE.LineSegments(gCol, colliderDebugMat));
+      }
+
+      // InteractionSpots (seats, entrances, bus stops)
+      const spotVerts: number[] = [];
+      for (const sp of nav.worldRegistry.interactionSpots) {
+        const [sx, sz] = tileToWorld(sp.x, sp.z);
+        const r = 0.1;
+        const y = 0.3;
+        spotVerts.push(
+          sx - r, y, sz, sx, y, sz + r,
+          sx, y, sz + r, sx + r, y, sz,
+          sx + r, y, sz, sx, y, sz - r,
+          sx, y, sz - r, sx - r, y, sz,
+        );
+      }
+      if (spotVerts.length > 0) {
+        const gSpot = new THREE.BufferGeometry();
+        gSpot.setAttribute('position', new THREE.Float32BufferAttribute(spotVerts, 3));
+        debugGroup.add(new THREE.LineSegments(gSpot, spotDebugMat));
+      }
+    };
+
+    const updateDynamicDebugOverlay = (
+      citizens: typeof initialState.citizens,
+    ) => {
+      const npcVerts: number[] = [];
+      const trailVerts: number[] = [];
+      const hitVerts: number[] = [];
+      const capR = 0.06 * TILE_WORLD_SIZE;
+      const segs = 10;
+
+      for (let ci = 0; ci < citizens.length; ci++) {
+        const cit = citizens[ci];
+        if (cit.insideBuildingId) continue;
+        const [wx, wz] = tileToWorld(cit.x, cit.z);
+        const y = 0.25;
+        for (let s = 0; s < segs; s++) {
+          const a0 = (s / segs) * Math.PI * 2;
+          const a1 = ((s + 1) / segs) * Math.PI * 2;
+          npcVerts.push(
+            wx + Math.cos(a0) * capR, y, wz + Math.sin(a0) * capR,
+            wx + Math.cos(a1) * capR, y, wz + Math.sin(a1) * capR,
+          );
+        }
+        if ((cit.blockedTicks ?? 0) > 0) {
+          hitVerts.push(
+            wx - 0.14, 0.45, wz - 0.14, wx + 0.14, 0.45, wz + 0.14,
+            wx + 0.14, 0.45, wz - 0.14, wx - 0.14, 0.45, wz + 0.14,
+          );
+        }
+        if (cit.trailHistory && cit.trailHistory.length >= 2) {
+          for (let ti = 0; ti < cit.trailHistory.length - 1; ti++) {
+            const [ax, az] = tileToWorld(cit.trailHistory[ti].x, cit.trailHistory[ti].z);
+            const [bx, bz] = tileToWorld(cit.trailHistory[ti + 1].x, cit.trailHistory[ti + 1].z);
+            trailVerts.push(ax, 0.2, az, bx, 0.2, bz);
+          }
+        }
+        if (cit.path && cit.pathIndex !== undefined && cit.pathIndex < cit.path.length) {
+          let px = wx;
+          let pz = wz;
+          for (let pi = cit.pathIndex; pi < Math.min(cit.path.length, cit.pathIndex + 8); pi++) {
+            const [nx, nz] = tileToWorld(cit.path[pi].x, cit.path[pi].z);
+            trailVerts.push(px, 0.32, pz, nx, 0.32, nz);
+            px = nx;
+            pz = nz;
+          }
+        }
+      }
+
+      const nav = getNavigationCache();
+      for (const col of nav.worldRegistry.recentCollisions) {
+        const [hx, hz] = tileToWorld(col.x, col.z);
+        hitVerts.push(
+          hx - 0.12, 0.36, hz - 0.12, hx + 0.12, 0.36, hz + 0.12,
+          hx + 0.12, 0.36, hz - 0.12, hx - 0.12, 0.36, hz + 0.12,
+        );
+      }
+
+      dynNpcGeo.setAttribute('position', new THREE.Float32BufferAttribute(npcVerts, 3));
+      dynNpcGeo.computeBoundingSphere();
+      dynTrailGeo.setAttribute('position', new THREE.Float32BufferAttribute(trailVerts, 3));
+      dynTrailGeo.computeBoundingSphere();
+      dynHitGeo.setAttribute('position', new THREE.Float32BufferAttribute(hitVerts, 3));
+      dynHitGeo.computeBoundingSphere();
     };
 
     let lastGhostKey = '';
@@ -526,10 +712,19 @@ export const CityViewport: React.FC = () => {
       updatePointerNdc(e);
       raycaster.setFromCamera(pointerNdc, camera);
       const hits = raycaster.intersectObject(terrainRig.hitPlaneInst, false);
+      const prev = hoveredTile;
       if (hits.length > 0) {
         hoveredTile = worldToTile(hits[0].point.x, hits[0].point.z);
       } else {
         hoveredTile = null;
+      }
+      const changed =
+        (prev === null) !== (hoveredTile === null) ||
+        (prev !== null && hoveredTile !== null && (prev[0] !== hoveredTile[0] || prev[1] !== hoveredTile[1]));
+      if (changed) {
+        useGameStore
+          .getState()
+          .setHoveredTileCoords(hoveredTile ? { x: hoveredTile[0], z: hoveredTile[1] } : null);
       }
     };
 
@@ -593,21 +788,43 @@ export const CityViewport: React.FC = () => {
     canvas.addEventListener('pointerup', onPointerUp);
     canvas.addEventListener('pointercancel', onPointerCancel);
 
-    // 8. Keyboard Controls (WASD / Arrows pan, R rotate, H Zen mode, M Drone toggle, Esc select)
+    // 8. Keyboard Controls (WASD pan, Space pause, R rotate, Ctrl+Z undo, H Zen, M Drone, Esc cancel)
     const keys: Record<string, boolean> = {};
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement ||
+        e.target instanceof HTMLSelectElement
+      ) {
+        return;
+      }
       keys[e.code] = true;
-      if (e.code === 'KeyR') {
-        useGameStore.getState().rotateBuildPreview();
+      const store = useGameStore.getState();
+
+      if ((e.ctrlKey || e.metaKey) && e.code === 'KeyZ') {
+        e.preventDefault();
+        store.undoLastBuild();
+        return;
+      }
+
+      if (e.code === 'Space') {
+        e.preventDefault();
+        store.setSpeed(store.speed === 0 ? 1 : 0);
+      } else if (e.code === 'KeyR') {
+        store.rotateBuildPreview();
       } else if (e.code === 'KeyH') {
-        useGameStore.getState().toggleZenMode();
+        store.toggleZenMode();
       } else if (e.code === 'KeyM') {
-        const cur = useGameStore.getState().cameraMode;
-        useGameStore.getState().setCameraMode(cur === 'drone' ? 'strategic' : 'drone');
+        const cur = store.cameraMode;
+        store.setCameraMode(cur === 'drone' ? 'strategic' : 'drone');
       } else if (e.code === 'Escape') {
-        useGameStore.getState().setActiveTool('select', null);
-        useGameStore.getState().followVehicle(null);
+        if (store.pendingDemolition) {
+          store.cancelDemolition();
+          return;
+        }
+        store.setActiveTool('select', null);
+        store.followVehicle(null);
+        store.followCitizen(null);
       }
     };
     const onKeyUp = (e: KeyboardEvent) => {
@@ -780,9 +997,12 @@ export const CityViewport: React.FC = () => {
 
       // Debug Overlay visibility & sync
       debugGroup.visible = updated.timeConfig.debugOverlay;
-      if (debugGroup.visible && lastDebugGridVersion !== updated.gridVersion) {
-        rebuildDebugGraphLines();
-        lastDebugGridVersion = updated.gridVersion;
+      if (debugGroup.visible) {
+        if (lastDebugGridVersion !== updated.gridVersion) {
+          rebuildDebugGraphLines();
+          lastDebugGridVersion = updated.gridVersion;
+        }
+        updateDynamicDebugOverlay(updated.citizens);
       }
 
       // Selection Rings & Citizen Planned Route Line
@@ -826,7 +1046,7 @@ export const CityViewport: React.FC = () => {
         routeLine.visible = false;
       }
 
-      // Placement Ghost Preview
+      // Placement Ghost Preview (Translucent 3D Mesh + Green/Red Outline + Facade Arrow)
       if (
         hoveredTile &&
         ((updated.activeTool === 'build' && updated.selectedBuildType) ||
@@ -841,32 +1061,78 @@ export const CityViewport: React.FC = () => {
             : updated.tiles[updated.moveSourceTile!.z * GRID_SIZE + updated.moveSourceTile!.x]?.building?.type;
 
         if (previewType) {
-          const ghostKey = `${previewType}_${updated.buildRotation}`;
+          const placement =
+            updated.activeTool === 'build'
+              ? evaluateBuildPlacement(
+                  updated.tiles,
+                  hx,
+                  hz,
+                  previewType,
+                  updated.economy.treasury,
+                  updated.developmentLevel,
+                  updated.manualBuildRotated,
+                  updated.buildRotation,
+                )
+              : null;
+
+          const effectiveRotation = placement ? placement.effectiveRotation : updated.buildRotation;
+          const ghostKey = `${previewType}_${effectiveRotation}`;
           if (ghostKey !== lastGhostKey) {
-            while (ghostHolder.children.length > 1) {
-              ghostHolder.remove(ghostHolder.children[1]);
+            while (ghostBuildingGroup.children.length > 0) {
+              ghostBuildingGroup.remove(ghostBuildingGroup.children[0]);
+            }
+            while (ghostClonedMaterials.length > 0) {
+              ghostClonedMaterials.pop()?.dispose();
             }
             if (!BUILDING_CATALOG[previewType].isRoad) {
               const previewMesh = buildProceduralBuildingMesh(previewType, 1, mats);
               previewMesh.traverse((child) => {
                 if ((child as THREE.Mesh).isMesh) {
-                  (child as THREE.Mesh).castShadow = false;
+                  const m = child as THREE.Mesh;
+                  m.castShadow = false;
+                  m.receiveShadow = false;
+                  if (Array.isArray(m.material)) {
+                    m.material = m.material.map((mat) => {
+                      const cloned = mat.clone();
+                      cloned.transparent = true;
+                      cloned.opacity = 0.56;
+                      cloned.depthWrite = false;
+                      ghostClonedMaterials.push(cloned);
+                      return cloned;
+                    });
+                  } else if (m.material) {
+                    const cloned = m.material.clone();
+                    cloned.transparent = true;
+                    cloned.opacity = 0.56;
+                    cloned.depthWrite = false;
+                    ghostClonedMaterials.push(cloned);
+                    m.material = cloned;
+                  }
                 }
               });
-              previewMesh.rotation.y = updated.buildRotation * (Math.PI / 2);
-              ghostHolder.add(previewMesh);
+              previewMesh.rotation.y = effectiveRotation * (Math.PI / 2);
+              ghostBuildingGroup.add(previewMesh);
             }
             lastGhostKey = ghostKey;
           }
-          const isValid =
-            tile &&
-            !tile.building &&
-            !tile.conflict &&
-            (BUILDING_CATALOG[previewType].isRoad
-              ? true
-              : tile.road === 'none' &&
-                (tile.terrain !== 'waterfront' || BUILDING_CATALOG[previewType].category === 'leisure'));
-          (ghostPad.material as THREE.MeshBasicMaterial).color.setHex(isValid ? 0x22c55e : 0xef4444);
+
+          const isValid = placement
+            ? placement.valid
+            : Boolean(
+                tile &&
+                  !tile.building &&
+                  !tile.conflict &&
+                  tile.road === 'none' &&
+                  (tile.terrain !== 'waterfront' || BUILDING_CATALOG[previewType].category === 'leisure'),
+              );
+
+          const statusHex = isValid ? 0x22c55e : 0xef4444;
+          (ghostPad.material as THREE.MeshBasicMaterial).color.setHex(statusHex);
+          ghostOutlineMat.color.setHex(statusHex);
+          ghostArrowGroup.visible = !BUILDING_CATALOG[previewType].isRoad;
+          ghostArrowGroup.rotation.y = effectiveRotation * (Math.PI / 2);
+          arrowMat.color.setHex(isValid ? 0xf59e0b : 0xef4444);
+
           const padY = tile ? getTilePadElevation(tile) + 0.025 : 0.06;
           ghostHolder.position.set(wx, padY, wz);
           ghostHolder.visible = true;
@@ -950,15 +1216,38 @@ export const CityViewport: React.FC = () => {
         controls.target.z = nextTz;
       }
 
-      // Explicit Camera Commands
+      // Explicit Camera Commands & Presets
       if (updated.cameraCommand && updated.cameraCommand.nonce !== lastCamNonce) {
         lastCamNonce = updated.cameraCommand.nonce;
         const cmd = updated.cameraCommand;
         if (cmd.type === 'reset') {
           activeCamGoal = {
             target: new THREE.Vector3(0, 0.1, 0),
-            pos: new THREE.Vector3(24, 23, 24),
+            pos: new THREE.Vector3(22, 21, 22),
           };
+        } else if (cmd.type === 'preset' && cmd.preset) {
+          const anchor = controls.target.clone();
+          if (cmd.preset === 'aerial') {
+            activeCamGoal = {
+              target: anchor,
+              pos: anchor.clone().add(new THREE.Vector3(22, 21, 22)),
+            };
+          } else if (cmd.preset === 'neighborhood') {
+            activeCamGoal = {
+              target: anchor,
+              pos: anchor.clone().add(new THREE.Vector3(10.5, 9.8, 10.5)),
+            };
+          } else if (cmd.preset === 'close') {
+            activeCamGoal = {
+              target: anchor,
+              pos: anchor.clone().add(new THREE.Vector3(6.0, 4.8, 6.0)),
+            };
+          } else if (cmd.preset === 'contemplative') {
+            activeCamGoal = {
+              target: anchor,
+              pos: anchor.clone().add(new THREE.Vector3(15.5, 5.8, -12.5)),
+            };
+          }
         } else if (cmd.type === 'focus_tile' && cmd.x !== undefined && cmd.z !== undefined) {
           const [wx, wz] = tileToWorld(cmd.x, cmd.z);
           const gy = groundHeightAt(wx, wz, updated.tiles);
@@ -1036,8 +1325,16 @@ export const CityViewport: React.FC = () => {
 
       controls.update();
 
-      // Prevent camera from clipping below terrain or coastal bay
-      const minCamY = groundHeightAt(camera.position.x, camera.position.z, updated.tiles) + 1.15;
+      // Prevent camera from clipping below terrain, coastal bay, or building roofs
+      let minCamY = groundHeightAt(camera.position.x, camera.position.z, updated.tiles) + 1.15;
+      const camTileCoords = worldToTile(camera.position.x, camera.position.z);
+      if (camTileCoords) {
+        const camTile = updated.tiles[camTileCoords[1] * GRID_SIZE + camTileCoords[0]];
+        if (camTile?.building) {
+          const roofClearance = 1.25 + (camTile.building.level ?? 1) * 0.95;
+          minCamY = Math.max(minCamY, getTilePadElevation(camTile) + roofClearance);
+        }
+      }
       if (camera.position.y < minCamY) {
         camera.position.y = minCamY;
       }
@@ -1090,10 +1387,18 @@ export const CityViewport: React.FC = () => {
 
       while (roadGroup.children.length > 0) roadGroup.remove(roadGroup.children[0]);
       while (buildingsGroup.children.length > 0) buildingsGroup.remove(buildingsGroup.children[0]);
+      while (ghostBuildingGroup.children.length > 0) {
+        ghostBuildingGroup.remove(ghostBuildingGroup.children[0]);
+      }
+      while (ghostClonedMaterials.length > 0) {
+        ghostClonedMaterials.pop()?.dispose();
+      }
       while (ghostHolder.children.length > 0) ghostHolder.remove(ghostHolder.children[0]);
-      while (debugGroup.children.length > 0) {
-        const ch = debugGroup.children[0] as THREE.LineSegments;
-        ch.geometry.dispose();
+      for (let i = debugGroup.children.length - 1; i >= 0; i--) {
+        const ch = debugGroup.children[i];
+        if ((ch as THREE.LineSegments).geometry) {
+          (ch as THREE.LineSegments).geometry.dispose();
+        }
         debugGroup.remove(ch);
       }
 
@@ -1119,10 +1424,23 @@ export const CityViewport: React.FC = () => {
       selectRingMat.dispose();
       ghostPadGeo.dispose();
       ghostPadMat.dispose();
+      ghostOutlineGeo.dispose();
+      ghostOutlineMat.dispose();
+      arrowShaftGeo.dispose();
+      arrowHeadGeo.dispose();
+      arrowMat.dispose();
       routeGeo.dispose();
       routeMat.dispose();
+      dynNpcGeo.dispose();
+      dynTrailGeo.dispose();
+      dynHitGeo.dispose();
       pedDebugMat.dispose();
       roadDebugMat.dispose();
+      colliderDebugMat.dispose();
+      spotDebugMat.dispose();
+      npcCapsuleDebugMat.dispose();
+      npcTrailDebugMat.dispose();
+      collisionHitDebugMat.dispose();
       renderer.dispose();
       if (canvas.parentElement === container) {
         container.removeChild(canvas);

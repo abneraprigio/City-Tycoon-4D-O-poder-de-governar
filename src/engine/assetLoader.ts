@@ -3,6 +3,7 @@ import { GLTFLoader, type GLTF } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
 import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
+import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import type { BuildingTypeId } from '../types/game';
 export {
   detectGraphicsCapabilities,
@@ -34,9 +35,44 @@ export const LOCAL_ASSET_MANIFEST: LocalAssetManifest = {
   environmentHdr: null,
 };
 
+/**
+ * Recommended open-license asset drop-in slots (PolyHaven HDRIs, Kenney / Mixamo GLBs).
+ * Kept out of LOCAL_ASSET_MANIFEST until files are placed under public/assets/ to prevent 404s.
+ */
+export const EXTERNAL_ASSET_RECOMMENDATIONS = {
+  environmentHdr: '/assets/hdri/sunlit_suburb_1k.hdr',
+  characters: {
+    adultRigged: '/assets/characters/citizen_adult_rigged.glb',
+    childRigged: '/assets/characters/citizen_child_rigged.glb',
+  },
+  vehicles: {
+    hatch: '/assets/vehicles/hatchback.glb',
+    sedan: '/assets/vehicles/sedan.glb',
+    bus: '/assets/vehicles/city_bus.glb',
+  },
+} as const;
+
 export interface LoadedGltfAsset {
   scene: THREE.Group;
   animations: THREE.AnimationClip[];
+}
+
+/**
+ * Safely clones a loaded GLTF scene including SkinnedMesh skeletons and bone bindings.
+ */
+export function cloneGltfAsset(asset: LoadedGltfAsset): LoadedGltfAsset {
+  const clonedScene = SkeletonUtils.clone(asset.scene) as THREE.Group;
+  clonedScene.traverse((obj) => {
+    if ((obj as THREE.Mesh).isMesh) {
+      const mesh = obj as THREE.Mesh;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+    }
+  });
+  return {
+    scene: clonedScene,
+    animations: asset.animations,
+  };
 }
 
 /**
@@ -82,16 +118,13 @@ export class CityAssetManager {
     if (this.disposed || !this.hasRegisteredAsset(url)) return null;
     const cached = this.models.get(key);
     if (cached) {
-      return {
-        scene: cached.scene.clone(true),
-        animations: cached.animations,
-      };
+      return cloneGltfAsset(cached);
     }
 
     const existingPromise = this.pendingLoads.get(key);
     if (existingPromise) {
       const res = await existingPromise;
-      return res ? { scene: res.scene.clone(true), animations: res.animations } : null;
+      return res ? cloneGltfAsset(res) : null;
     }
 
     const promise = new Promise<LoadedGltfAsset | null>((resolve) => {
@@ -124,7 +157,7 @@ export class CityAssetManager {
 
     this.pendingLoads.set(key, promise);
     const loaded = await promise;
-    return loaded ? { scene: loaded.scene.clone(true), animations: loaded.animations } : null;
+    return loaded ? cloneGltfAsset(loaded) : null;
   }
 
   async loadEnvironmentHdr(

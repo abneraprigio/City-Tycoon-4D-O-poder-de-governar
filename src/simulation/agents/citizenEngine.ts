@@ -42,6 +42,9 @@ export function normalizeCitizensForLivingWorld(
     if (c.blockedTicks === undefined) c.blockedTicks = 0;
     if (c.unreachableCount === undefined) c.unreachableCount = 0;
     if (c.decisionCooldown === undefined) c.decisionCooldown = (i % 6) * 0.08;
+    if (c.appearanceSeed === undefined) c.appearanceSeed = i * 97 + c.age * 13;
+    if (c.lastValidX === undefined) c.lastValidX = c.x;
+    if (c.lastValidZ === undefined) c.lastValidZ = c.z;
   }
 }
 
@@ -65,6 +68,7 @@ function pairSocializingNeighbors(citizens: CitizenAgent[]): void {
       !c.insideBuildingId &&
       c.behaviorState === 'Socializing' &&
       !c.talkingWithId &&
+      !c.occupiedSpotId &&
       c.movementState === 'stopped',
   );
   for (let i = 0; i < candidates.length; i++) {
@@ -102,6 +106,7 @@ export interface CitizenStepContext {
   economy: EconomyState;
   batchCursor: number;
   runNeedsAndStructure: boolean;
+  vehicles?: import('../../types/game').RoadVehicleSim[];
 }
 
 export function stepCitizenEcosystem(ctx: CitizenStepContext): {
@@ -145,6 +150,7 @@ export function stepCitizenEcosystem(ctx: CitizenStepContext): {
       ctx.economy,
       hasActiveConflict,
       batchIds.has(c.id),
+      ctx.vehicles ?? [],
     );
   }
 

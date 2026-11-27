@@ -1,12 +1,19 @@
 import { GRID_SIZE, PathPoint, TileData } from '../../types/game';
 import {
   CARDINAL_DIRS,
+  SW_OFF,
   computeBuildingAccess,
   isBuildingSolidObstacle,
   isWaterObstacle,
   tileAt,
   tileKey,
 } from './obstacleSystem';
+import {
+  UrbanWorldRegistry,
+  buildUrbanWorldRegistry,
+  hasLineOfSight,
+  isCircleBlocked,
+} from './worldRegistry';
 
 export interface PedestrianEdge {
   to: string;
@@ -20,7 +27,7 @@ export interface PedestrianNode {
   z: number;
   tileX: number;
   tileZ: number;
-  kind: 'sidewalk' | 'lot' | 'entrance';
+  kind: 'sidewalk' | 'lot' | 'entrance' | 'plaza';
   buildingId?: string;
   edges: PedestrianEdge[];
 }
@@ -31,8 +38,6 @@ export interface PedestrianGraph {
   tileNodes: Map<string, string[]>;
   crosswalkSegments: Array<{ ax: number; az: number; bx: number; bz: number; tileX: number; tileZ: number }>;
 }
-
-const SW_OFF = 0.38; // Sidewalk distance from road tile center
 
 function addNode(graph: PedestrianGraph, node: PedestrianNode): PedestrianNode {
   const existing = graph.nodes.get(node.id);
@@ -51,10 +56,22 @@ function connectNodes(
   bId: string,
   costMultiplier = 1.0,
   isCrosswalk = false,
+  tiles?: TileData[],
+  registry?: UrbanWorldRegistry,
+  allowedBuildingId?: string,
 ): void {
   const a = graph.nodes.get(aId);
   const b = graph.nodes.get(bId);
   if (!a || !b || aId === bId) return;
+
+  // Validate non-crosswalk edges physically against UrbanWorldRegistry so edges never cut corners/walls/fountains
+  if (!isCrosswalk && tiles && registry) {
+    const clear = hasLineOfSight(registry, tiles, a.x, a.z, b.x, b.z, 0.045, {
+      allowedBuildingId,
+    });
+    if (!clear) return;
+  }
+
   const dist = Math.hypot(a.x - b.x, a.z - b.z) * costMultiplier;
   if (!a.edges.some((e) => e.to === bId)) {
     a.edges.push({ to: bId, cost: dist, isCrosswalk });
@@ -65,13 +82,16 @@ function connectNodes(
 }
 
 /**
- * Builds an urban pedestrian graph composed of:
- * 1) 4 sidewalk corner nodes per road tile (NW, NE, SW, SE)
- * 2) Crosswalks across road tiles with elevated cost so NPCs prefer sidewalks first
- * 3) Walkable open tiles (parks, plazas, empty non-water lots)
- * 4) Building front entrance nodes facing adjacent sidewalks
+ * Builds an urban pedestrian graph derived from rendered sidewalks, crosswalks,
+ * plaza walkways around fountains/benches, and front entrances.
+ * Every non-crosswalk edge is validated against UrbanWorldRegistry via hasLineOfSight.
  */
-export function buildPedestrianGraph(tiles: TileData[]): PedestrianGraph {
+export function buildPedestrianGraph(
+  tiles: TileData[],
+  providedRegistry?: UrbanWorldRegistry,
+): PedestrianGraph {
+  const registry = providedRegistry ?? buildUrbanWorldRegistry(tiles);
+
   const graph: PedestrianGraph = {
     nodes: new Map(),
     buildingEntranceNode: new Map(),
@@ -103,32 +123,32 @@ export function buildPedestrianGraph(tiles: TileData[]): PedestrianGraph {
     const isIntersection = roadNeighbors >= 3 || (northRoad !== southRoad && westRoad !== eastRoad);
 
     // Sidewalks along edges WITHOUT continuing perpendicular roads
-    if (!northRoad) connectNodes(graph, nw, ne, 1.0, false);
-    if (!southRoad) connectNodes(graph, sw, se, 1.0, false);
-    if (!westRoad) connectNodes(graph, nw, sw, 1.0, false);
-    if (!eastRoad) connectNodes(graph, ne, se, 1.0, false);
+    if (!northRoad) connectNodes(graph, nw, ne, 1.0, false, tiles, registry);
+    if (!southRoad) connectNodes(graph, sw, se, 1.0, false, tiles, registry);
+    if (!westRoad) connectNodes(graph, nw, sw, 1.0, false, tiles, registry);
+    if (!eastRoad) connectNodes(graph, ne, se, 1.0, false, tiles, registry);
 
     // Crosswalks across street at intersections OR straight stretches every 2 tiles
     if (northRoad || isIntersection || (!northRoad && !southRoad && (x + z) % 2 === 0)) {
-      connectNodes(graph, nw, ne, 1.65, true);
+      connectNodes(graph, nw, ne, 1.7, true);
       const a = graph.nodes.get(nw)!;
       const b = graph.nodes.get(ne)!;
       graph.crosswalkSegments.push({ ax: a.x, az: a.z, bx: b.x, bz: b.z, tileX: x, tileZ: z });
     }
     if (southRoad || isIntersection) {
-      connectNodes(graph, sw, se, 1.65, true);
+      connectNodes(graph, sw, se, 1.7, true);
       const a = graph.nodes.get(sw)!;
       const b = graph.nodes.get(se)!;
       graph.crosswalkSegments.push({ ax: a.x, az: a.z, bx: b.x, bz: b.z, tileX: x, tileZ: z });
     }
     if (westRoad || isIntersection || (!westRoad && !eastRoad && (x + z) % 2 === 0)) {
-      connectNodes(graph, nw, sw, 1.65, true);
+      connectNodes(graph, nw, sw, 1.7, true);
       const a = graph.nodes.get(nw)!;
       const b = graph.nodes.get(sw)!;
       graph.crosswalkSegments.push({ ax: a.x, az: a.z, bx: b.x, bz: b.z, tileX: x, tileZ: z });
     }
     if (eastRoad || isIntersection) {
-      connectNodes(graph, ne, se, 1.65, true);
+      connectNodes(graph, ne, se, 1.7, true);
       const a = graph.nodes.get(ne)!;
       const b = graph.nodes.get(se)!;
       graph.crosswalkSegments.push({ ax: a.x, az: a.z, bx: b.x, bz: b.z, tileX: x, tileZ: z });
@@ -141,21 +161,92 @@ export function buildPedestrianGraph(tiles: TileData[]): PedestrianGraph {
     const { x, z } = tile;
     const east = tileAt(tiles, x + 1, z);
     if (east && east.road !== 'none') {
-      connectNodes(graph, `sw:${x},${z}:ne`, `sw:${x + 1},${z}:nw`, 1.0, false);
-      connectNodes(graph, `sw:${x},${z}:se`, `sw:${x + 1},${z}:sw`, 1.0, false);
+      connectNodes(graph, `sw:${x},${z}:ne`, `sw:${x + 1},${z}:nw`, 1.0, false, tiles, registry);
+      connectNodes(graph, `sw:${x},${z}:se`, `sw:${x + 1},${z}:sw`, 1.0, false, tiles, registry);
     }
     const south = tileAt(tiles, x, z + 1);
     if (south && south.road !== 'none') {
-      connectNodes(graph, `sw:${x},${z}:sw`, `sw:${x},${z + 1}:nw`, 1.0, false);
-      connectNodes(graph, `sw:${x},${z}:se`, `sw:${x},${z + 1}:ne`, 1.0, false);
+      connectNodes(graph, `sw:${x},${z}:sw`, `sw:${x},${z + 1}:nw`, 1.0, false, tiles, registry);
+      connectNodes(graph, `sw:${x},${z}:se`, `sw:${x},${z + 1}:ne`, 1.0, false, tiles, registry);
     }
   }
 
-  // 3. Walkable non-road tiles (plazas, parks, open lots, excluding water and solid buildings)
+  // 3. Plaza / Park walkable path rings + public empty grass lots (never private fenced yards)
   for (const tile of tiles) {
     if (tile.road !== 'none') continue;
     if (isWaterObstacle(tile)) continue;
     if (isBuildingSolidObstacle(tile)) continue;
+
+    if (tile.building?.type === 'praca' || tile.building?.type === 'parque') {
+      // Create 4 walkable plaza ring nodes circling center fountain/lake & connecting to benches
+      const ring = 0.21;
+      const pN = `plz:${tile.x},${tile.z}:n`;
+      const pS = `plz:${tile.x},${tile.z}:s`;
+      const pW = `plz:${tile.x},${tile.z}:w`;
+      const pE = `plz:${tile.x},${tile.z}:e`;
+      const ringCoords: Array<[string, number, number]> = [
+        [pN, tile.x, tile.z - ring],
+        [pS, tile.x, tile.z + ring],
+        [pW, tile.x - ring, tile.z],
+        [pE, tile.x + ring, tile.z],
+      ];
+      const activeRing: string[] = [];
+      for (const [id, rx, rz] of ringCoords) {
+        if (!isCircleBlocked(registry, tiles, rx, rz, 0.045).blocked) {
+          addNode(graph, {
+            id,
+            x: rx,
+            z: rz,
+            tileX: tile.x,
+            tileZ: tile.z,
+            kind: 'plaza',
+            buildingId: tile.building.id,
+            edges: [],
+          });
+          activeRing.push(id);
+        }
+      }
+      // Connect adjacent ring corners around obstacle center
+      const pairs = [
+        [pN, pW],
+        [pN, pE],
+        [pS, pW],
+        [pS, pE],
+      ];
+      for (const [a, b] of pairs) {
+        connectNodes(graph, a, b, 1.0, false, tiles, registry);
+      }
+      // Also connect outer perimeter corners for smooth entry from any street side
+      const cOff = 0.4;
+      const cNW = `plz:${tile.x},${tile.z}:cnw`;
+      const cNE = `plz:${tile.x},${tile.z}:cne`;
+      const cSW = `plz:${tile.x},${tile.z}:csw`;
+      const cSE = `plz:${tile.x},${tile.z}:cse`;
+      for (const [id, cx, cz, nearA, nearB] of [
+        [cNW, tile.x - cOff, tile.z - cOff, pN, pW],
+        [cNE, tile.x + cOff, tile.z - cOff, pN, pE],
+        [cSW, tile.x - cOff, tile.z + cOff, pS, pW],
+        [cSE, tile.x + cOff, tile.z + cOff, pS, pE],
+      ] as const) {
+        if (!isCircleBlocked(registry, tiles, cx, cz, 0.045).blocked) {
+          addNode(graph, {
+            id,
+            x: cx,
+            z: cz,
+            tileX: tile.x,
+            tileZ: tile.z,
+            kind: 'plaza',
+            buildingId: tile.building.id,
+            edges: [],
+          });
+          connectNodes(graph, id, nearA, 1.05, false, tiles, registry);
+          connectNodes(graph, id, nearB, 1.05, false, tiles, registry);
+        }
+      }
+      continue;
+    }
+
+    // Empty lots: keep walkable only if unblocked (public parkway / open terrain), with higher cost than sidewalks
     const lotId = `lot:${tile.x},${tile.z}`;
     addNode(graph, {
       id: lotId,
@@ -168,37 +259,65 @@ export function buildPedestrianGraph(tiles: TileData[]): PedestrianGraph {
     });
   }
 
-  // Connect walkable lots to adjacent lots & sidewalks
+  // Connect plazas and open lots to adjacent sidewalks & walkable neighbors (strictly LOS-validated!)
   for (const tile of tiles) {
     if (tile.road !== 'none') continue;
+    const isPlaza = tile.building?.type === 'praca' || tile.building?.type === 'parque';
     const lotId = `lot:${tile.x},${tile.z}`;
-    if (!graph.nodes.has(lotId)) continue;
-    const isParkOrPlaza = tile.building?.type === 'praca' || tile.building?.type === 'parque';
-    const lotPenalty = isParkOrPlaza ? 1.05 : 1.45;
+    if (!isPlaza && !graph.nodes.has(lotId)) continue;
 
     for (const dir of CARDINAL_DIRS) {
       const nb = tileAt(tiles, tile.x + dir.dx, tile.z + dir.dz);
       if (!nb) continue;
+
+      if (isPlaza) {
+        const pId =
+          dir.dz === -1
+            ? `plz:${tile.x},${tile.z}:n`
+            : dir.dz === 1
+            ? `plz:${tile.x},${tile.z}:s`
+            : dir.dx === -1
+            ? `plz:${tile.x},${tile.z}:w`
+            : `plz:${tile.x},${tile.z}:e`;
+        if (nb.road !== 'none') {
+          const roadKey = `sw:${nb.x},${nb.z}`;
+          const corners =
+            dir.dx === 1
+              ? [`${roadKey}:nw`, `${roadKey}:sw`]
+              : dir.dx === -1
+              ? [`${roadKey}:ne`, `${roadKey}:se`]
+              : dir.dz === 1
+              ? [`${roadKey}:nw`, `${roadKey}:ne`]
+              : [`${roadKey}:sw`, `${roadKey}:se`];
+          for (const c of corners) {
+            connectNodes(graph, pId, c, 1.05, false, tiles, registry);
+          }
+        } else {
+          const nbLot = `lot:${nb.x},${nb.z}`;
+          if (graph.nodes.has(nbLot)) {
+            connectNodes(graph, pId, nbLot, 1.25, false, tiles, registry);
+          }
+        }
+        continue;
+      }
+
       if (nb.road !== 'none') {
-        // Connect to both sidewalk corners facing this lot
         const roadKey = `sw:${nb.x},${nb.z}`;
-        if (dir.dx === 1) {
-          connectNodes(graph, lotId, `${roadKey}:nw`, 1.15, false);
-          connectNodes(graph, lotId, `${roadKey}:sw`, 1.15, false);
-        } else if (dir.dx === -1) {
-          connectNodes(graph, lotId, `${roadKey}:ne`, 1.15, false);
-          connectNodes(graph, lotId, `${roadKey}:se`, 1.15, false);
-        } else if (dir.dz === 1) {
-          connectNodes(graph, lotId, `${roadKey}:nw`, 1.15, false);
-          connectNodes(graph, lotId, `${roadKey}:ne`, 1.15, false);
-        } else if (dir.dz === -1) {
-          connectNodes(graph, lotId, `${roadKey}:sw`, 1.15, false);
-          connectNodes(graph, lotId, `${roadKey}:se`, 1.15, false);
+        const corners =
+          dir.dx === 1
+            ? [`${roadKey}:nw`, `${roadKey}:sw`]
+            : dir.dx === -1
+            ? [`${roadKey}:ne`, `${roadKey}:se`]
+            : dir.dz === 1
+            ? [`${roadKey}:nw`, `${roadKey}:ne`]
+            : [`${roadKey}:sw`, `${roadKey}:se`];
+        for (const c of corners) {
+          connectNodes(graph, lotId, c, 1.45, false, tiles, registry);
         }
       } else {
         const nbLot = `lot:${nb.x},${nb.z}`;
         if (graph.nodes.has(nbLot)) {
-          connectNodes(graph, lotId, nbLot, lotPenalty, false);
+          connectNodes(graph, lotId, nbLot, 1.85, false, tiles, registry);
         }
       }
     }
@@ -221,40 +340,40 @@ export function buildPedestrianGraph(tiles: TileData[]): PedestrianGraph {
     });
     graph.buildingEntranceNode.set(tile.building.id, entId);
 
-    // Connect entrance to adjacent road sidewalks (strongly preferred) or nearby walkable lot
+    // Connect entrance to adjacent road sidewalks (strongly preferred)
     if (access.adjacentRoadTile) {
       const rx = access.adjacentRoadTile.x;
       const rz = access.adjacentRoadTile.z;
       const dx = rx - tile.x;
       const dz = rz - tile.z;
       const base = `sw:${rx},${rz}`;
-      if (dx === 1) {
-        connectNodes(graph, entId, `${base}:nw`, 1.0, false);
-        connectNodes(graph, entId, `${base}:sw`, 1.0, false);
-      } else if (dx === -1) {
-        connectNodes(graph, entId, `${base}:ne`, 1.0, false);
-        connectNodes(graph, entId, `${base}:se`, 1.0, false);
-      } else if (dz === 1) {
-        connectNodes(graph, entId, `${base}:nw`, 1.0, false);
-        connectNodes(graph, entId, `${base}:ne`, 1.0, false);
-      } else if (dz === -1) {
-        connectNodes(graph, entId, `${base}:sw`, 1.0, false);
-        connectNodes(graph, entId, `${base}:se`, 1.0, false);
+      const corners =
+        dx === 1
+          ? [`${base}:nw`, `${base}:sw`]
+          : dx === -1
+          ? [`${base}:ne`, `${base}:se`]
+          : dz === 1
+          ? [`${base}:nw`, `${base}:ne`]
+          : [`${base}:sw`, `${base}:se`];
+      for (const c of corners) {
+        connectNodes(graph, entId, c, 1.0, false, tiles, registry, tile.building.id);
       }
     }
 
-    // For parks/plazas, connect entrance to internal center lot node too
-    const selfLot = `lot:${tile.x},${tile.z}`;
-    if (graph.nodes.has(selfLot)) {
-      connectNodes(graph, entId, selfLot, 1.0, false);
+    // For parks/plazas, connect entrance to internal plaza walkway nodes
+    for (const suffix of ['n', 's', 'w', 'e', 'cnw', 'cne', 'csw', 'cse']) {
+      const pNode = `plz:${tile.x},${tile.z}:${suffix}`;
+      if (graph.nodes.has(pNode)) {
+        connectNodes(graph, entId, pNode, 1.0, false, tiles, registry, tile.building.id);
+      }
     }
 
-    // Fallback connection if building has no road yet: connect to adjacent walkable lot
+    // Fallback connection if building has no road yet: connect to adjacent open walkable lot
     if (!access.adjacentRoadTile) {
       for (const dir of CARDINAL_DIRS) {
         const nbLot = `lot:${tile.x + dir.dx},${tile.z + dir.dz}`;
         if (graph.nodes.has(nbLot)) {
-          connectNodes(graph, entId, nbLot, 1.35, false);
+          connectNodes(graph, entId, nbLot, 1.35, false, tiles, registry, tile.building.id);
         }
       }
     }
@@ -268,12 +387,17 @@ export function findNearestPedestrianNode(
   x: number,
   z: number,
   maxRadius = 3,
+  tiles?: TileData[],
+  registry?: UrbanWorldRegistry,
+  allowedBuildingId?: string | null,
 ): PedestrianNode | null {
   const cx = Math.max(0, Math.min(GRID_SIZE - 1, Math.round(x)));
   const cz = Math.max(0, Math.min(GRID_SIZE - 1, Math.round(z)));
 
-  let best: PedestrianNode | null = null;
-  let bestDist = Infinity;
+  let bestClear: PedestrianNode | null = null;
+  let bestClearDist = Infinity;
+  let bestAny: PedestrianNode | null = null;
+  let bestAnyDist = Infinity;
 
   for (let r = 0; r <= maxRadius; r++) {
     for (let dz = -r; dz <= r; dz++) {
@@ -285,16 +409,23 @@ export function findNearestPedestrianNode(
           const node = graph.nodes.get(nid);
           if (!node || node.edges.length === 0) continue;
           const d = Math.hypot(node.x - x, node.z - z);
-          if (d < bestDist) {
-            bestDist = d;
-            best = node;
+          if (d < bestAnyDist) {
+            bestAnyDist = d;
+            bestAny = node;
+          }
+          if (tiles && registry) {
+            if (d < bestClearDist && hasLineOfSight(registry, tiles, x, z, node.x, node.z, 0.045, { allowedBuildingId })) {
+              bestClearDist = d;
+              bestClear = node;
+            }
           }
         }
       }
     }
-    if (best) return best;
+    if (bestClear) return bestClear;
+    if (!registry && bestAny) return bestAny;
   }
-  return best;
+  return bestClear ?? bestAny;
 }
 
 export function isCrosswalkPoint(graph: PedestrianGraph, point: PathPoint): boolean {

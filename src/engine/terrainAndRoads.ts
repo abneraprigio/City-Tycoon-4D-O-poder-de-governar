@@ -6,6 +6,7 @@ import {
   TileData,
   BUILDING_CATALOG,
 } from '../types/game';
+import { WORLD_SCALE } from '../simulation/worldScale';
 import { ProceduralTextureSet } from './proceduralTextures';
 import { BuildingMaterialLibrary } from './buildingModels';
 
@@ -527,7 +528,10 @@ export function buildConnectedRoadNetwork(
     // Sidewalk base slab filling full 2x2 footprint cleanly
     pushBox(sidewalkMatrices, wx, baseY + 0.025, wz, TILE_WORLD_SIZE, 0.05, TILE_WORLD_SIZE);
 
-    const roadW = isAve ? 1.48 : 1.18;
+    const roadW = isAve ? WORLD_SCALE.avenueAsphaltWidthU : WORLD_SCALE.streetAsphaltWidthU;
+    const lampGap = WORLD_SCALE.lampCurbGapU;
+    const busGap = WORLD_SCALE.busStopCurbGapU;
+    const sigGap = WORLD_SCALE.signalCurbGapU;
     const halfSpan = TILE_WORLD_SIZE / 2; // 1.0
     const armLen = (TILE_WORLD_SIZE - roadW) / 2;
 
@@ -572,18 +576,18 @@ export function buildConnectedRoadNetwork(
           pushBox(yellowMatrices, wx, baseY + 0.06, wz + zOff, 0.045, 0.004, 0.28);
         }
       }
-      // Alternating streetlamp on sidewalk
+      // Alternating streetlamp on sidewalk curb
       if ((tile.x + tile.z) % 2 === 0) {
         lampPostCoords.push({
-          wx: wx + roadW / 2 + 0.14,
+          wx: wx + roadW / 2 + lampGap,
           wy: baseY + 0.05,
           wz,
           rotY: Math.PI,
         });
       }
-      if (isAve && (tile.x * 3 + tile.z) % 5 === 0) {
+      if (isAve && ((tile.x * 3 + tile.z) % 5 === 0 || tile.busStop)) {
         busStopCoords.push({
-          wx: wx - roadW / 2 - 0.14,
+          wx: wx - roadW / 2 - busGap,
           wy: baseY + 0.05,
           wz,
           rotY: Math.PI / 2,
@@ -605,15 +609,15 @@ export function buildConnectedRoadNetwork(
         lampPostCoords.push({
           wx,
           wy: baseY + 0.05,
-          wz: wz - roadW / 2 - 0.14,
+          wz: wz - roadW / 2 - lampGap,
           rotY: -Math.PI / 2,
         });
       }
-      if (isAve && (tile.x + tile.z * 3) % 5 === 0) {
+      if (isAve && ((tile.x + tile.z * 3) % 5 === 0 || tile.busStop)) {
         busStopCoords.push({
           wx,
           wy: baseY + 0.05,
-          wz: wz + roadW / 2 + 0.14,
+          wz: wz + roadW / 2 + busGap,
           rotY: Math.PI,
         });
       }
@@ -642,17 +646,17 @@ export function buildConnectedRoadNetwork(
       }
       // Traffic light on corner
       trafficLightCoords.push({
-        wx: wx + roadW / 2 + 0.14,
+        wx: wx + roadW / 2 + sigGap,
         wy: baseY + 0.05,
-        wz: wz + roadW / 2 + 0.14,
+        wz: wz + roadW / 2 + sigGap,
       });
     } else if (degree === 2) {
       // Curve / corner sidewalk accent lamp
       if ((tile.x + tile.z) % 2 === 0) {
         lampPostCoords.push({
-          wx: wx + (e ? -roadW / 2 - 0.12 : roadW / 2 + 0.12),
+          wx: wx + (e ? -roadW / 2 - lampGap : roadW / 2 + lampGap),
           wy: baseY + 0.05,
-          wz: wz + (s ? -roadW / 2 - 0.12 : roadW / 2 + 0.12),
+          wz: wz + (s ? -roadW / 2 - lampGap : roadW / 2 + lampGap),
           rotY: 0,
         });
       }

@@ -95,29 +95,172 @@ export function getNavigationCache(): UrbanNavigationCache {
 }
 
 export type LeftTabId =
-  | 'build'
-  | 'infra'
-  | 'realestate'
+  | 'admin'
   | 'economy'
   | 'politics'
-  | 'layers'
-  | 'achievements';
+  | 'planning'
+  | 'indicators';
+
+export type CameraPresetId = 'aerial' | 'neighborhood' | 'close' | 'contemplative';
 
 export interface CameraCommand {
   type:
     | 'focus_tile'
     | 'follow_citizen'
     | 'reset'
+    | 'preset'
     | 'rotate_left'
     | 'rotate_right'
     | 'tilt_up'
     | 'tilt_down'
     | 'zoom_in'
     | 'zoom_out';
+  preset?: CameraPresetId;
   x?: number;
   z?: number;
   citizenId?: string;
   nonce: number;
+}
+
+export interface BuildUndoEntry {
+  kind: 'road' | 'building';
+  x: number;
+  z: number;
+  buildingId: string | null;
+  buildingType: BuildingTypeId;
+  roadBefore: TileData['road'];
+  roadAfter: TileData['road'];
+  ownerTypeBefore: TileData['ownerType'];
+  ownerNameBefore: string;
+  concessionBefore: boolean;
+  totalCostPaid: number;
+  builtDay: number;
+  builtMonth: number;
+  builtYear: number;
+}
+
+export interface BuildPlacementEvaluation {
+  valid: boolean;
+  reason: string | null;
+  buildType: BuildingTypeId;
+  name: string;
+  isRoad: boolean;
+  totalCost: number;
+  landCost: number;
+  buildCost: number;
+  monthlyCost: number;
+  monthlyRevenue: number;
+  hasPower: boolean;
+  hasWater: boolean;
+  hasRoadAccess: boolean;
+  impactSummary: string;
+  effectiveRotation: number;
+}
+
+export function evaluateBuildPlacement(
+  tiles: TileData[],
+  x: number,
+  z: number,
+  buildType: BuildingTypeId,
+  treasury: number,
+  developmentLevel: number,
+  manualRotated: boolean,
+  buildRotation: number,
+): BuildPlacementEvaluation {
+  const def = BUILDING_CATALOG[buildType];
+  const tile = getTile(tiles, x, z);
+
+  const emptyEval: BuildPlacementEvaluation = {
+    valid: false,
+    reason: 'Terreno fora dos limites do mapa.',
+    buildType,
+    name: def?.name ?? buildType,
+    isRoad: Boolean(def?.isRoad),
+    totalCost: def?.cost ?? 0,
+    landCost: 0,
+    buildCost: def?.cost ?? 0,
+    monthlyCost: def?.monthlyMaintenance ?? 0,
+    monthlyRevenue: def?.monthlyRevenue ?? 0,
+    hasPower: false,
+    hasWater: false,
+    hasRoadAccess: false,
+    impactSummary: '',
+    effectiveRotation: buildRotation,
+  };
+
+  if (!def || !tile) return emptyEval;
+
+  const isRoad = Boolean(def.isRoad);
+  const landCost =
+    !isRoad && tile.ownerType === 'available' ? Math.round(tile.landValue * 0.65) : 0;
+  const totalCost = def.cost + landCost;
+  const hasAdjacentRoad = [
+    getTile(tiles, x + 1, z),
+    getTile(tiles, x - 1, z),
+    getTile(tiles, x, z + 1),
+    getTile(tiles, x, z - 1),
+  ].some((n) => Boolean(n && n.road !== 'none'));
+
+  const effectiveRotation = isRoad
+    ? 0
+    : manualRotated
+    ? buildRotation
+    : computeFacingRoadRotation(tiles, x, z, buildRotation);
+
+  const impactParts: string[] = [];
+  if (def.housingCapacity > 0) impactParts.push(`+${def.housingCapacity} moradias`);
+  if (def.jobsProvided > 0) impactParts.push(`+${def.jobsProvided} vagas`);
+  if (def.powerProvided > 0) impactParts.push(`+${def.powerProvided} energia`);
+  if (def.waterProvided > 0) impactParts.push(`+${def.waterProvided} água`);
+  if (def.happinessBonus > 0) impactParts.push(`+${def.happinessBonus} lazer`);
+  if (def.safetyBonus > 0) impactParts.push(`+${def.safetyBonus} seg.`);
+  if (def.healthBonus > 0) impactParts.push(`+${def.healthBonus} saúde`);
+  if (def.educationBonus > 0) impactParts.push(`+${def.educationBonus} educ.`);
+  if (isRoad) impactParts.push('Conexão viária');
+  const impactSummary = impactParts.join(' · ') || 'Infraestrutura urbana';
+
+  let reason: string | null = null;
+  if (developmentLevel < def.unlockLevel) {
+    const reqName = DEVELOPMENT_LEVELS.find((d) => d.level === def.unlockLevel)?.name || '';
+    reason = `Desbloqueado no nível ${def.unlockLevel} (${reqName}).`;
+  } else if (tile.conflict) {
+    reason = 'Resolva o conflito fundiário antes de construir.';
+  } else if (isRoad) {
+    const roadType = def.id === 'avenida' ? 'avenida' : 'rua';
+    if (tile.building) {
+      reason = 'Demolir o imóvel antes de pavimentar este lote.';
+    } else if (tile.road === roadType) {
+      reason = 'Via deste padrão já instalada aqui.';
+    } else if (treasury < def.cost) {
+      reason = 'Orçamento público insuficiente.';
+    }
+  } else if (tile.building || tile.road !== 'none') {
+    reason = 'Este terreno já está ocupado.';
+  } else if (tile.terrain === 'waterfront' && def.category !== 'leisure') {
+    reason = 'Área de orla reservada para praças, parques e lazer.';
+  } else if (def.id === 'prefeitura' && tiles.some((t) => t.building?.type === 'prefeitura')) {
+    reason = 'A cidade já possui uma Prefeitura Municipal.';
+  } else if (treasury < totalCost) {
+    reason = `Saldo insuficiente (necessário R$ ${totalCost.toLocaleString('pt-BR')}).`;
+  }
+
+  return {
+    valid: reason === null,
+    reason,
+    buildType,
+    name: def.name,
+    isRoad,
+    totalCost,
+    landCost,
+    buildCost: def.cost,
+    monthlyCost: def.monthlyMaintenance,
+    monthlyRevenue: def.monthlyRevenue,
+    hasPower: tile.hasPower || def.powerProvided > 0,
+    hasWater: tile.hasWater || def.waterProvided > 0,
+    hasRoadAccess: isRoad || hasAdjacentRoad,
+    impactSummary,
+    effectiveRotation,
+  };
 }
 
 export interface ToastNotice {
@@ -164,6 +307,9 @@ export interface GameState {
   manualBuildRotated: boolean;
   moveSourceTile: { x: number; z: number } | null;
   selectedTileCoords: { x: number; z: number } | null;
+  hoveredTileCoords: { x: number; z: number } | null;
+  pendingDemolition: { x: number; z: number } | null;
+  buildUndoStack: BuildUndoEntry[];
   selectedCitizenId: string | null;
   followedCitizenId: string | null;
   showCitizenRoute: boolean;
@@ -176,6 +322,7 @@ export interface GameState {
   graphicsQuality: GraphicsQuality;
   recommendedQuality: GraphicsQuality;
   cameraMode: CameraMode;
+  activeCameraPreset: CameraPresetId;
   followedVehicleId: string | null;
   cameraFocusTile: { x: number; z: number };
   cameraCommand: CameraCommand | null;
@@ -195,7 +342,9 @@ export interface GameState {
   setShowCitizenRoute: (show: boolean) => void;
   toggleBusStop: (x: number, z: number) => void;
   setActiveTool: (tool: InteractionTool, buildType?: BuildingTypeId | null) => void;
+  setHoveredTileCoords: (coords: { x: number; z: number } | null) => void;
   rotateBuildPreview: () => void;
+  undoLastBuild: () => void;
   setThematicMode: (mode: ThematicMapMode) => void;
   setActiveLeftTab: (tab: LeftTabId | null) => void;
   toggleZenMode: () => void;
@@ -204,6 +353,7 @@ export interface GameState {
   setShowSettingsModal: (open: boolean) => void;
   setGraphicsQuality: (quality: GraphicsQuality) => void;
   setCameraMode: (mode: CameraMode) => void;
+  setCameraPreset: (preset: CameraPresetId) => void;
   followVehicle: (vehicleId: string | null) => void;
   setCameraFocusTile: (x: number, z: number) => void;
 
@@ -215,6 +365,9 @@ export interface GameState {
   interactWithTile: (x: number, z: number) => void;
   upgradeBuilding: (x: number, z: number) => void;
   startMoveBuilding: (x: number, z: number) => void;
+  requestDemolition: (x: number, z: number) => void;
+  confirmDemolition: () => void;
+  cancelDemolition: () => void;
   demolishAt: (x: number, z: number) => void;
 
   buyLand: (x: number, z: number) => void;
@@ -278,6 +431,8 @@ function buildLivingWorldRuntime(
     pedestrianNodes: navCache.pedestrianGraph.nodes.size,
     roadNodes: navCache.roadGraph.nodes.size,
     cachedRoutes: navCache.cacheCount,
+    collisionHits: navCache.worldRegistry.collisionHits,
+    worldObjects: navCache.worldRegistry.objects.length,
   };
 
   void indicators;
@@ -1171,11 +1326,14 @@ export const useGameStore = create<GameState>((set, get) => ({
   manualBuildRotated: false,
   moveSourceTile: null,
   selectedTileCoords: null,
+  hoveredTileCoords: null,
+  pendingDemolition: null,
+  buildUndoStack: [],
   selectedCitizenId: null,
   followedCitizenId: null,
   showCitizenRoute: true,
   thematicMode: 'normal',
-  activeLeftTab: 'build',
+  activeLeftTab: null,
   zenMode: false,
   showNewspaperModal: false,
   showCloudModal: false,
@@ -1183,6 +1341,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   graphicsQuality: savedGraphicsQuality ?? detectedCaps.recommendedQuality,
   recommendedQuality: detectedCaps.recommendedQuality,
   cameraMode: 'strategic',
+  activeCameraPreset: 'aerial',
   followedVehicleId: null,
   cameraFocusTile: { x: 12, z: 12 },
   cameraCommand: null,
@@ -1260,11 +1419,109 @@ export const useGameStore = create<GameState>((set, get) => ({
       manualBuildRotated: false,
     }),
 
+  setHoveredTileCoords: (hoveredTileCoords) => set({ hoveredTileCoords }),
+
   rotateBuildPreview: () =>
     set((s) => ({
       buildRotation: (s.buildRotation + 1) % 4,
       manualBuildRotated: true,
     })),
+
+  undoLastBuild: () => {
+    const state = get();
+    if (state.buildUndoStack.length === 0) {
+      state.showToast('Nenhuma obra recente disponível para desfazer.', 'info');
+      return;
+    }
+    const entry = state.buildUndoStack[state.buildUndoStack.length - 1];
+    const remainingStack = state.buildUndoStack.slice(0, -1);
+
+    if (
+      entry.builtDay !== state.day ||
+      entry.builtMonth !== state.month ||
+      entry.builtYear !== state.year
+    ) {
+      set({ buildUndoStack: [] });
+      state.showToast('Prazo de desfazimento encerrado após virada de dia.', 'warning');
+      return;
+    }
+
+    const tile = getTile(state.tiles, entry.x, entry.z);
+    if (!tile) {
+      set({ buildUndoStack: remainingStack });
+      return;
+    }
+
+    if (entry.kind === 'building') {
+      if (
+        !tile.building ||
+        tile.building.id !== entry.buildingId ||
+        tile.building.level !== 1 ||
+        tile.concessionActive
+      ) {
+        set({ buildUndoStack: remainingStack });
+        state.showToast('Obra já modificada ou ocupada não pode ser desfeita.', 'warning');
+        return;
+      }
+    } else {
+      if (tile.building || tile.road !== entry.roadAfter || tile.busStop) {
+        set({ buildUndoStack: remainingStack });
+        state.showToast('Trecho viário já alterado não pode ser desfeito.', 'warning');
+        return;
+      }
+    }
+
+    const tiles = state.tiles.map((t) => ({
+      ...t,
+      building: t.building ? { ...t.building } : null,
+    }));
+    const target = tiles[entry.z * GRID_SIZE + entry.x];
+    target.building = null;
+    target.road = entry.roadBefore;
+    target.busStop = false;
+    target.zone = 'none';
+    target.ownerType = entry.ownerTypeBefore;
+    target.ownerName = entry.ownerNameBefore;
+    target.concessionActive = entry.concessionBefore;
+
+    const economy = {
+      ...state.economy,
+      treasury: state.economy.treasury + entry.totalCostPaid,
+    };
+    const grid = recomputeCityGridMetrics(tiles, economy, state.politics);
+    const updatedCitizens = state.citizens.map((c) => {
+      if (entry.buildingId && c.insideBuildingId === entry.buildingId) {
+        return { ...c, insideBuildingId: null, path: [], pathIndex: 0 };
+      }
+      return { ...c };
+    });
+    const households = reconcileHouseholds(tiles, updatedCitizens, state.households);
+    const workplaces = reconcileWorkplaces(tiles, updatedCitizens);
+
+    set((s) => ({
+      tiles,
+      citizens: updatedCitizens,
+      households,
+      workplaces,
+      economy,
+      indicators: {
+        ...s.indicators,
+        housingCapacity: grid.housingCapacity,
+        jobsTotal: grid.jobsTotal,
+        safety: grid.avgSafety,
+        health: grid.avgHealth,
+        education: grid.avgEducation,
+        pollution: grid.avgPollution,
+      },
+      buildUndoStack: remainingStack,
+      gridVersion: s.gridVersion + 1,
+      thematicVersion: s.thematicVersion + 1,
+    }));
+    state.showToast(
+      `Obra desfeita (+R$ ${entry.totalCostPaid.toLocaleString('pt-BR')} estornados).`,
+      'info',
+    );
+  },
 
   setThematicMode: (thematicMode) => set({ thematicMode }),
 
@@ -1297,6 +1554,15 @@ export const useGameStore = create<GameState>((set, get) => ({
       cameraMode,
       followedCitizenId: cameraMode === 'follow' ? s.followedCitizenId : null,
       followedVehicleId: cameraMode === 'follow' ? s.followedVehicleId : null,
+    })),
+
+  setCameraPreset: (preset) =>
+    set((s) => ({
+      activeCameraPreset: preset,
+      cameraMode: preset === 'aerial' ? 'strategic' : 'drone',
+      followedCitizenId: null,
+      followedVehicleId: null,
+      cameraCommand: { type: 'preset', preset, nonce: Date.now() },
     })),
 
   followVehicle: (vehicleId) =>
@@ -1353,6 +1619,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         day: nextDay,
         hourOfDay: 7.0,
         dayAccumulator: 0,
+        buildUndoStack: [],
         gridVersion: s.gridVersion + 1,
       }));
       return;
@@ -1410,6 +1677,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       decisionLogs: result.decisionLogs,
       activeEvent: result.triggeredEvent ?? s.activeEvent,
       endGameReport: result.endGameReport ?? s.endGameReport,
+      buildUndoStack: [],
       gridVersion: s.gridVersion + 1,
       thematicVersion: s.thematicVersion + 1,
     }));
@@ -1463,6 +1731,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       economy: state.economy,
       batchCursor: citizenBatchCursor,
       runNeedsAndStructure,
+      vehicles: trafficSystemRuntime.vehicles,
     });
     citizenBatchCursor = ecoStep.nextBatchCursor;
 
@@ -1493,6 +1762,8 @@ export const useGameStore = create<GameState>((set, get) => ({
           pedestrianNodes: navCache.pedestrianGraph.nodes.size,
           roadNodes: navCache.roadGraph.nodes.size,
           cachedRoutes: navCache.cacheCount,
+          collisionHits: navCache.worldRegistry.collisionHits,
+          worldObjects: navCache.worldRegistry.objects.length,
         }
       : state.simStats;
 
@@ -1588,6 +1859,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       decisionLogs: result.decisionLogs,
       activeEvent: result.triggeredEvent ?? s.activeEvent,
       endGameReport: result.endGameReport ?? s.endGameReport,
+      buildUndoStack: [],
       gridVersion: s.gridVersion + 1,
       thematicVersion: s.thematicVersion + 1,
       toast: result.developmentChangedTo
@@ -1615,7 +1887,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
 
     if (state.activeTool === 'demolish') {
-      state.demolishAt(x, z);
+      state.requestDemolition(x, z);
       return;
     }
 
@@ -1710,6 +1982,22 @@ export const useGameStore = create<GameState>((set, get) => ({
           state.showToast('Orçamento público insuficiente.', 'error');
           return;
         }
+        const undoEntry: BuildUndoEntry = {
+          kind: 'road',
+          x,
+          z,
+          buildingId: null,
+          buildingType: def.id,
+          roadBefore: tile.road,
+          roadAfter: roadType,
+          ownerTypeBefore: tile.ownerType,
+          ownerNameBefore: tile.ownerName,
+          concessionBefore: tile.concessionActive,
+          totalCostPaid: def.cost,
+          builtDay: state.day,
+          builtMonth: state.month,
+          builtYear: state.year,
+        };
         const tiles = state.tiles.map((t) => ({ ...t }));
         const target = tiles[z * GRID_SIZE + x];
         target.road = roadType;
@@ -1721,6 +2009,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         set((s) => ({
           tiles,
           economy,
+          buildUndoStack: [...s.buildUndoStack.slice(-14), undoEntry],
           gridVersion: s.gridVersion + 1,
           thematicVersion: s.thematicVersion + 1,
         }));
@@ -1753,6 +2042,10 @@ export const useGameStore = create<GameState>((set, get) => ({
         );
         return;
       }
+
+      const undoOwnerBefore = tile.ownerType;
+      const undoOwnerNameBefore = tile.ownerName;
+      const undoConcessionBefore = tile.concessionActive;
 
       const tiles = state.tiles.map((t) => ({
         ...t,
@@ -1790,6 +2083,23 @@ export const useGameStore = create<GameState>((set, get) => ({
       target.zone = inferBuildingZone(target);
       target.building.zone = target.zone;
 
+      const undoEntry: BuildUndoEntry = {
+        kind: 'building',
+        x,
+        z,
+        buildingId: placed.id,
+        buildingType: def.id,
+        roadBefore: tile.road,
+        roadAfter: tile.road,
+        ownerTypeBefore: undoOwnerBefore,
+        ownerNameBefore: undoOwnerNameBefore,
+        concessionBefore: undoConcessionBefore,
+        totalCostPaid: totalCost,
+        builtDay: state.day,
+        builtMonth: state.month,
+        builtYear: state.year,
+      };
+
       const economy = {
         ...state.economy,
         treasury: state.economy.treasury - totalCost,
@@ -1816,6 +2126,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         workplaces,
         economy,
         indicators,
+        buildUndoStack: [...s.buildUndoStack.slice(-14), undoEntry],
         selectedTileCoords: { x, z },
         gridVersion: s.gridVersion + 1,
         thematicVersion: s.thematicVersion + 1,
@@ -1877,6 +2188,31 @@ export const useGameStore = create<GameState>((set, get) => ({
     });
     state.showToast('Clique em um lote vazio para mover o imóvel.', 'info');
   },
+
+  requestDemolition: (x, z) => {
+    const state = get();
+    const tile = getTile(state.tiles, x, z);
+    if (!tile) return;
+    if (tile.building?.type === 'prefeitura') {
+      state.showToast('Não é possível demolir a Prefeitura Municipal.', 'error');
+      return;
+    }
+    if (!tile.building && tile.road === 'none') {
+      state.showToast('Nada para demolir neste terreno.', 'info');
+      return;
+    }
+    set({ pendingDemolition: { x, z } });
+  },
+
+  confirmDemolition: () => {
+    const state = get();
+    const pending = state.pendingDemolition;
+    set({ pendingDemolition: null });
+    if (!pending) return;
+    state.demolishAt(pending.x, pending.z);
+  },
+
+  cancelDemolition: () => set({ pendingDemolition: null }),
 
   demolishAt: (x, z) => {
     const state = get();
@@ -2460,6 +2796,9 @@ export const useGameStore = create<GameState>((set, get) => ({
     set((s) => ({
       ...fresh,
       selectedTileCoords: null,
+      hoveredTileCoords: null,
+      pendingDemolition: null,
+      buildUndoStack: [],
       selectedCitizenId: null,
       followedCitizenId: null,
       activeTool: 'select',
@@ -2508,6 +2847,9 @@ export const useGameStore = create<GameState>((set, get) => ({
     set((s) => ({
       ...hydrated,
       selectedTileCoords: null,
+      hoveredTileCoords: null,
+      pendingDemolition: null,
+      buildUndoStack: [],
       selectedCitizenId: null,
       followedCitizenId: null,
       gridVersion: s.gridVersion + 1,

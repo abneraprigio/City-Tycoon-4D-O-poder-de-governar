@@ -2,15 +2,25 @@ import { TileData } from '../../types/game';
 import { buildPedestrianGraph, PedestrianGraph } from './pedestrianGraph';
 import { buildRoadGraph, RoadGraph } from './roadGraph';
 import { findPedestrianPath, findRoadPath, PathResult } from './pathfinding';
+import { buildUrbanWorldRegistry, UrbanWorldRegistry } from './worldRegistry';
 
 const MAX_CACHED_ROUTES = 1200;
 
 /**
- * Holds compiled PedestrianGraph & RoadGraph alongside an LRU path cache.
+ * Holds compiled UrbanWorldRegistry, PedestrianGraph & RoadGraph alongside an LRU path cache.
  * Automatically rebuilds and invalidates ONLY when gridVersion changes.
  */
 export class UrbanNavigationCache {
   public builtVersion = -1;
+  public worldRegistry: UrbanWorldRegistry = {
+    objects: [],
+    spatialBuckets: new Map(),
+    interactionSpots: [],
+    spotById: new Map(),
+    spotsByBuildingId: new Map(),
+    collisionHits: 0,
+    recentCollisions: [],
+  };
   public pedestrianGraph: PedestrianGraph = {
     nodes: new Map(),
     buildingEntranceNode: new Map(),
@@ -28,7 +38,8 @@ export class UrbanNavigationCache {
 
   public ensureFresh(tiles: TileData[], version: number): void {
     if (this.builtVersion === version && this.pedestrianGraph.nodes.size > 0) return;
-    this.pedestrianGraph = buildPedestrianGraph(tiles);
+    this.worldRegistry = buildUrbanWorldRegistry(tiles);
+    this.pedestrianGraph = buildPedestrianGraph(tiles, this.worldRegistry);
     this.roadGraph = buildRoadGraph(tiles);
     this.pedRouteCache.clear();
     this.roadRouteCache.clear();
@@ -43,7 +54,6 @@ export class UrbanNavigationCache {
     const key = `${startNodeId}->${goalNodeId}`;
     const hit = this.pedRouteCache.get(key);
     if (hit) {
-      // Refresh LRU ordering
       this.pedRouteCache.delete(key);
       this.pedRouteCache.set(key, hit);
       return hit;

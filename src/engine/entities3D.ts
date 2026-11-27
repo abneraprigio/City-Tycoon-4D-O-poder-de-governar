@@ -9,6 +9,7 @@ import {
 } from '../types/game';
 import { getTilePadElevation, tileToWorld, worldToTile } from './terrainAndRoads';
 import { getSignalAspectForDirection } from '../simulation/traffic/trafficSignals';
+import { WORLD_SCALE, getCitizenHeightWorld } from '../simulation/worldScale';
 
 export type VehicleKind =
   | 'hatch'
@@ -35,9 +36,11 @@ export interface VehicleEntity {
 const _dummy = new THREE.Object3D();
 const _color = new THREE.Color();
 
-const SKIN_TONES = [0xf2c9ac, 0xdca57d, 0xb87b52, 0x7c4d30, 0xe8b996];
-const PANTS_TONES = [0x1e293b, 0x334155, 0x3f3f46, 0x1e3a5f, 0x4b5563];
-const HAIR_TONES = [0x1c1917, 0x443226, 0x785a3c, 0x52525b, 0x27272a];
+const SKIN_TONES = [0xf2c9ac, 0xdca57d, 0xb87b52, 0x7c4d30, 0xe8b996, 0x9b6440];
+const PANTS_TONES = [0x1e293b, 0x334155, 0x3f3f46, 0x1e3a5f, 0x4b5563, 0x57534e];
+const HAIR_TONES = [0x1c1917, 0x443226, 0x785a3c, 0x52525b, 0x27272a, 0x92400e];
+const HAT_TONES = [0x496b57, 0x283b49, 0xd2a97b, 0xb45309, 0x475569];
+const BACKPACK_TONES = [0x334155, 0x496b57, 0x9a3412, 0x1e3a5f, 0x57534e];
 
 interface VehicleDimensions {
   bodyW: number;
@@ -52,114 +55,116 @@ interface VehicleDimensions {
   axleSpread: number;
 }
 
+const VS = WORLD_SCALE.vehicleSpecs;
+
 const VEHICLE_SPECS: Record<VehicleKind, VehicleDimensions> = {
   hatch: {
-    bodyW: 0.28,
-    bodyH: 0.11,
-    bodyL: 0.5,
-    cabW: 0.24,
-    cabH: 0.09,
-    cabL: 0.28,
+    bodyW: VS.hatch.width,
+    bodyH: VS.hatch.height * 0.43,
+    bodyL: VS.hatch.length,
+    cabW: VS.hatch.width * 0.85,
+    cabH: VS.hatch.height * 0.35,
+    cabL: VS.hatch.length * 0.56,
     cabZOffset: -0.04,
-    wheelR: 0.055,
-    wheelW: 0.04,
-    axleSpread: 0.15,
+    wheelR: 0.054,
+    wheelW: 0.038,
+    axleSpread: VS.hatch.length * 0.3,
   },
   sedan: {
-    bodyW: 0.29,
-    bodyH: 0.11,
-    bodyL: 0.58,
-    cabW: 0.24,
-    cabH: 0.09,
-    cabL: 0.28,
+    bodyW: VS.sedan.width,
+    bodyH: VS.sedan.height * 0.42,
+    bodyL: VS.sedan.length,
+    cabW: VS.sedan.width * 0.84,
+    cabH: VS.sedan.height * 0.35,
+    cabL: VS.sedan.length * 0.48,
     cabZOffset: -0.03,
-    wheelR: 0.058,
-    wheelW: 0.04,
-    axleSpread: 0.18,
+    wheelR: 0.056,
+    wheelW: 0.038,
+    axleSpread: VS.sedan.length * 0.31,
   },
   suv: {
-    bodyW: 0.31,
-    bodyH: 0.13,
-    bodyL: 0.6,
-    cabW: 0.27,
-    cabH: 0.11,
-    cabL: 0.36,
-    cabZOffset: -0.05,
-    wheelR: 0.068,
-    wheelW: 0.045,
-    axleSpread: 0.19,
+    bodyW: VS.suv.width,
+    bodyH: VS.suv.height * 0.42,
+    bodyL: VS.suv.length,
+    cabW: VS.suv.width * 0.87,
+    cabH: VS.suv.height * 0.35,
+    cabL: VS.suv.length * 0.56,
+    cabZOffset: -0.06,
+    wheelR: 0.066,
+    wheelW: 0.044,
+    axleSpread: VS.suv.length * 0.3,
   },
   moto: {
-    bodyW: 0.1,
-    bodyH: 0.1,
-    bodyL: 0.32,
-    cabW: 0.09,
-    cabH: 0.07,
-    cabL: 0.12,
+    bodyW: VS.moto.width,
+    bodyH: VS.moto.height * 0.44,
+    bodyL: VS.moto.length,
+    cabW: VS.moto.width * 0.84,
+    cabH: VS.moto.height * 0.3,
+    cabL: VS.moto.length * 0.36,
     cabZOffset: 0.02,
-    wheelR: 0.055,
-    wheelW: 0.03,
-    axleSpread: 0.11,
+    wheelR: 0.052,
+    wheelW: 0.026,
+    axleSpread: VS.moto.length * 0.34,
   },
   bus: {
-    bodyW: 0.34,
-    bodyH: 0.26,
-    bodyL: 0.92,
-    cabW: 0.32,
-    cabH: 0.1,
-    cabL: 0.84,
+    bodyW: VS.bus.width,
+    bodyH: VS.bus.height * 0.65,
+    bodyL: VS.bus.length,
+    cabW: VS.bus.width * 0.94,
+    cabH: VS.bus.height * 0.21,
+    cabL: VS.bus.length * 0.92,
     cabZOffset: 0.0,
     wheelR: 0.072,
-    wheelW: 0.05,
-    axleSpread: 0.28,
+    wheelW: 0.048,
+    axleSpread: VS.bus.length * 0.3,
   },
   truck: {
-    bodyW: 0.33,
-    bodyH: 0.24,
-    bodyL: 0.84,
-    cabW: 0.31,
-    cabH: 0.17,
-    cabL: 0.26,
-    cabZOffset: 0.26,
+    bodyW: VS.truck.width,
+    bodyH: VS.truck.height * 0.55,
+    bodyL: VS.truck.length,
+    cabW: VS.truck.width * 0.92,
+    cabH: VS.truck.height * 0.3,
+    cabL: VS.truck.length * 0.28,
+    cabZOffset: VS.truck.length * 0.32,
     wheelR: 0.072,
-    wheelW: 0.05,
-    axleSpread: 0.25,
+    wheelW: 0.048,
+    axleSpread: VS.truck.length * 0.29,
   },
   ambulance: {
-    bodyW: 0.31,
-    bodyH: 0.21,
-    bodyL: 0.68,
-    cabW: 0.27,
-    cabH: 0.11,
-    cabL: 0.22,
-    cabZOffset: 0.19,
-    wheelR: 0.065,
-    wheelW: 0.045,
-    axleSpread: 0.21,
+    bodyW: VS.ambulance.width,
+    bodyH: VS.ambulance.height * 0.56,
+    bodyL: VS.ambulance.length,
+    cabW: VS.ambulance.width * 0.88,
+    cabH: VS.ambulance.height * 0.28,
+    cabL: VS.ambulance.length * 0.32,
+    cabZOffset: VS.ambulance.length * 0.28,
+    wheelR: 0.064,
+    wheelW: 0.044,
+    axleSpread: VS.ambulance.length * 0.3,
   },
   fire: {
-    bodyW: 0.34,
-    bodyH: 0.24,
-    bodyL: 0.86,
-    cabW: 0.31,
-    cabH: 0.14,
-    cabL: 0.28,
-    cabZOffset: 0.24,
+    bodyW: VS.fire.width,
+    bodyH: VS.fire.height * 0.57,
+    bodyL: VS.fire.length,
+    cabW: VS.fire.width * 0.9,
+    cabH: VS.fire.height * 0.29,
+    cabL: VS.fire.length * 0.28,
+    cabZOffset: VS.fire.length * 0.3,
     wheelR: 0.07,
-    wheelW: 0.05,
-    axleSpread: 0.26,
+    wheelW: 0.048,
+    axleSpread: VS.fire.length * 0.3,
   },
   police: {
-    bodyW: 0.29,
-    bodyH: 0.11,
-    bodyL: 0.58,
-    cabW: 0.24,
-    cabH: 0.09,
-    cabL: 0.28,
+    bodyW: VS.police.width,
+    bodyH: VS.police.height * 0.42,
+    bodyL: VS.police.length,
+    cabW: VS.police.width * 0.84,
+    cabH: VS.police.height * 0.36,
+    cabL: VS.police.length * 0.48,
     cabZOffset: -0.02,
-    wheelR: 0.058,
+    wheelR: 0.056,
     wheelW: 0.04,
-    axleSpread: 0.18,
+    axleSpread: VS.police.length * 0.31,
   },
 };
 
@@ -196,11 +201,17 @@ interface HumanoidRig {
   rightArmPivot: THREE.Group;
   headMesh: THREE.Mesh;
   hairMesh: THREE.Mesh;
+  bunMesh: THREE.Mesh;
+  hatBrimMesh: THREE.Mesh;
+  hatCrownMesh: THREE.Mesh;
+  backpackMesh: THREE.Mesh;
   torsoMesh: THREE.Mesh;
   leftLegMesh: THREE.Mesh;
   rightLegMesh: THREE.Mesh;
   leftArmMesh: THREE.Mesh;
   rightArmMesh: THREE.Mesh;
+  hatMat: THREE.MeshStandardMaterial;
+  backpackMat: THREE.MeshStandardMaterial;
 }
 
 function hashStr(s: string): number {
@@ -220,20 +231,22 @@ function buildHumanoidAnimationClips(): Record<CitizenAnimState, THREE.Animation
     armAmp: number,
     bobAmp: number,
     armBias = 0,
+    legBias = 0,
+    bodyBaseY = 0,
   ) => {
     const lLeg = new THREE.NumberKeyframeTrack('leftLeg.rotation[x]', times3, [
-      0,
-      legAmp,
-      0,
-      -legAmp,
-      0,
+      legBias,
+      legBias + legAmp,
+      legBias,
+      legBias - legAmp,
+      legBias,
     ]);
     const rLeg = new THREE.NumberKeyframeTrack('rightLeg.rotation[x]', times3, [
-      0,
-      -legAmp,
-      0,
-      legAmp,
-      0,
+      legBias,
+      legBias - legAmp,
+      legBias,
+      legBias + legAmp,
+      legBias,
     ]);
     const lArm = new THREE.NumberKeyframeTrack('leftArm.rotation[x]', times3, [
       armBias,
@@ -250,26 +263,26 @@ function buildHumanoidAnimationClips(): Record<CitizenAnimState, THREE.Animation
       armBias,
     ]);
     const bodyBob = new THREE.NumberKeyframeTrack('bodyRoot.position[y]', times3, [
-      0,
-      bobAmp,
-      0,
-      bobAmp,
-      0,
+      bodyBaseY,
+      bodyBaseY + bobAmp,
+      bodyBaseY,
+      bodyBaseY + bobAmp,
+      bodyBaseY,
     ]);
     return new THREE.AnimationClip(name, 1.0, [lLeg, rLeg, lArm, rArm, bodyBob]);
   };
 
   return {
-    Idle: makeCycle('Idle', 0.02, 0.04, 0.004, 0),
-    Wait: makeCycle('Wait', 0.0, 0.05, 0.003, -0.15),
-    Sit: makeCycle('Sit', 0.0, 0.04, 0.0, -0.3),
+    Idle: makeCycle('Idle', 0.015, 0.035, 0.004, 0),
+    Wait: makeCycle('Wait', 0.0, 0.045, 0.003, -0.14),
+    Sit: makeCycle('Sit', 0.0, 0.03, 0.0, -0.35, -1.35, -0.02),
     WalkSlow: makeCycle('WalkSlow', 0.4, 0.32, 0.012, 0),
     Walk: makeCycle('Walk', 0.58, 0.48, 0.018, 0),
     WalkFast: makeCycle('WalkFast', 0.74, 0.65, 0.024, 0),
     Run: makeCycle('Run', 0.92, 0.85, 0.035, -0.2),
-    Talk: makeCycle('Talk', 0.03, 0.28, 0.006, -0.45),
-    Shop: makeCycle('Shop', 0.04, 0.2, 0.006, -0.3),
-    Work: makeCycle('Work', 0.04, 0.35, 0.008, -0.55),
+    Talk: makeCycle('Talk', 0.025, 0.26, 0.005, -0.45),
+    Shop: makeCycle('Shop', 0.03, 0.2, 0.005, -0.3),
+    Work: makeCycle('Work', 0.03, 0.34, 0.007, -0.55),
   };
 }
 
@@ -378,9 +391,15 @@ export function createTrafficAndCitizenSystem(
   const clips = buildHumanoidAnimationClips();
   const limbGeo = new THREE.BoxGeometry(0.055, 0.17, 0.055);
   limbGeo.translate(0, -0.085, 0);
-  const torsoGeo = new THREE.BoxGeometry(0.14, 0.19, 0.085);
-  const headGeo = new THREE.SphereGeometry(0.055, 8, 7);
-  const hairGeo = new THREE.SphereGeometry(0.058, 8, 6, 0, Math.PI * 2, 0, Math.PI * 0.58);
+  const shoeGeo = new THREE.BoxGeometry(0.06, 0.035, 0.082);
+  const torsoGeo = new THREE.BoxGeometry(0.145, 0.19, 0.088);
+  const backpackGeo = new THREE.BoxGeometry(0.105, 0.135, 0.055);
+  const headGeo = new THREE.SphereGeometry(0.055, 10, 8);
+  const hairGeo = new THREE.SphereGeometry(0.059, 10, 7, 0, Math.PI * 2, 0, Math.PI * 0.58);
+  const bunGeo = new THREE.SphereGeometry(0.028, 7, 6);
+  const hatBrimGeo = new THREE.CylinderGeometry(0.078, 0.078, 0.012, 10);
+  const hatCrownGeo = new THREE.CylinderGeometry(0.052, 0.058, 0.04, 10);
+  const sharedShoeMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.75 });
 
   const detailedGroup = new THREE.Group();
   scene.add(detailedGroup);
@@ -398,11 +417,18 @@ export function createTrafficAndCitizenSystem(
     const pantsMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.8 });
     const skinMat = new THREE.MeshStandardMaterial({ color: 0xdca57d, roughness: 0.68 });
     const hairMat = new THREE.MeshStandardMaterial({ color: 0x1c1917, roughness: 0.82 });
+    const hatMat = new THREE.MeshStandardMaterial({ color: 0x496b57, roughness: 0.78 });
+    const backpackMat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.78 });
 
     const torsoMesh = new THREE.Mesh(torsoGeo, torsoMat);
     torsoMesh.position.y = 0.27;
     torsoMesh.castShadow = !isSoftwareGl;
     bodyRoot.add(torsoMesh);
+
+    const backpackMesh = new THREE.Mesh(backpackGeo, backpackMat);
+    backpackMesh.position.set(0, 0.275, -0.068);
+    backpackMesh.castShadow = !isSoftwareGl;
+    bodyRoot.add(backpackMesh);
 
     const headMesh = new THREE.Mesh(headGeo, skinMat);
     headMesh.position.y = 0.42;
@@ -413,23 +439,39 @@ export function createTrafficAndCitizenSystem(
     hairMesh.position.y = 0.425;
     bodyRoot.add(hairMesh);
 
+    const bunMesh = new THREE.Mesh(bunGeo, hairMat);
+    bunMesh.position.set(0, 0.44, -0.05);
+    bodyRoot.add(bunMesh);
+
+    const hatBrimMesh = new THREE.Mesh(hatBrimGeo, hatMat);
+    hatBrimMesh.position.set(0, 0.455, 0.01);
+    bodyRoot.add(hatBrimMesh);
+
+    const hatCrownMesh = new THREE.Mesh(hatCrownGeo, hatMat);
+    hatCrownMesh.position.set(0, 0.478, 0);
+    bodyRoot.add(hatCrownMesh);
+
     const leftLegPivot = new THREE.Group();
     leftLegPivot.name = 'leftLeg';
     leftLegPivot.position.set(-0.036, 0.175, 0);
     const leftLegMesh = new THREE.Mesh(limbGeo, pantsMat);
-    leftLegPivot.add(leftLegMesh);
+    const leftShoeMesh = new THREE.Mesh(shoeGeo, sharedShoeMat);
+    leftShoeMesh.position.set(0, -0.158, 0.014);
+    leftLegPivot.add(leftLegMesh, leftShoeMesh);
     bodyRoot.add(leftLegPivot);
 
     const rightLegPivot = new THREE.Group();
     rightLegPivot.name = 'rightLeg';
     rightLegPivot.position.set(0.036, 0.175, 0);
     const rightLegMesh = new THREE.Mesh(limbGeo, pantsMat);
-    rightLegPivot.add(rightLegMesh);
+    const rightShoeMesh = new THREE.Mesh(shoeGeo, sharedShoeMat);
+    rightShoeMesh.position.set(0, -0.158, 0.014);
+    rightLegPivot.add(rightLegMesh, rightShoeMesh);
     bodyRoot.add(rightLegPivot);
 
     const leftArmPivot = new THREE.Group();
     leftArmPivot.name = 'leftArm';
-    leftArmPivot.position.set(-0.095, 0.35, 0);
+    leftArmPivot.position.set(-0.098, 0.35, 0);
     const leftArmMesh = new THREE.Mesh(limbGeo, torsoMat);
     leftArmMesh.scale.set(0.8, 0.9, 0.8);
     leftArmPivot.add(leftArmMesh);
@@ -437,7 +479,7 @@ export function createTrafficAndCitizenSystem(
 
     const rightArmPivot = new THREE.Group();
     rightArmPivot.name = 'rightArm';
-    rightArmPivot.position.set(0.095, 0.35, 0);
+    rightArmPivot.position.set(0.098, 0.35, 0);
     const rightArmMesh = new THREE.Mesh(limbGeo, torsoMat);
     rightArmMesh.scale.set(0.8, 0.9, 0.8);
     rightArmPivot.add(rightArmMesh);
@@ -465,11 +507,17 @@ export function createTrafficAndCitizenSystem(
       rightArmPivot,
       headMesh,
       hairMesh,
+      bunMesh,
+      hatBrimMesh,
+      hatCrownMesh,
+      backpackMesh,
       torsoMesh,
       leftLegMesh,
       rightLegMesh,
       leftArmMesh,
       rightArmMesh,
+      hatMat,
+      backpackMat,
     });
   }
 
@@ -529,9 +577,11 @@ export function createTrafficAndCitizenSystem(
       const nsAspect = getSignalAspectForDirection(sig, 0, 1);
       const ewAspect = getSignalAspectForDirection(sig, 1, 0);
 
+      const roadW = tile?.road === 'avenida' ? WORLD_SCALE.avenueAsphaltWidthU : WORLD_SCALE.streetAsphaltWidthU;
+      const sigOff = roadW / 2 + WORLD_SCALE.signalCurbGapU;
       const corners: Array<[number, number, 'green' | 'yellow' | 'red']> = [
-        [wx - 0.72, wz - 0.72, nsAspect],
-        [wx + 0.72, wz + 0.72, ewAspect],
+        [wx - sigOff, wz - sigOff, nsAspect],
+        [wx + sigOff, wz + sigOff, ewAspect],
       ];
 
       for (const [cx, cz, aspect] of corners) {
@@ -577,7 +627,12 @@ export function createTrafficAndCitizenSystem(
 
       const dirX = Math.sin(sv.yaw);
       const dirZ = Math.cos(sv.yaw);
-      const laneOff = kind === 'moto' ? 0.16 : 0.26;
+      const laneOff =
+        kind === 'moto'
+          ? 0.17
+          : kind === 'bus' || kind === 'truck' || kind === 'fire'
+            ? 0.27
+            : 0.24;
       const px = wxCenter - dirZ * laneOff;
       const pz = wzCenter + dirX * laneOff;
 
@@ -701,19 +756,32 @@ export function createTrafficAndCitizenSystem(
       const groundY = (tile ? getTilePadElevation(tile) : 0.06) + (tile && tile.road !== 'none' ? 0.052 : 0.01);
 
       const camDist = Math.hypot(wx - cameraTarget.x, wz - cameraTarget.z);
-      const seed = hashStr(cit.id);
+      const seed = cit.appearanceSeed ?? hashStr(cit.id);
       const shirtHex = cit.behaviorState === 'Protesting' || cit.state === 'protesting' ? 0xef4444 : cit.shirtColor;
+      const targetHeightU = getCitizenHeightWorld(cit.age, seed);
+      const heightScale = targetHeightU / 0.475;
+      const spd = cit.currentSpeed ?? 0;
 
       if (camDist <= detailDistance && nearIdx < maxDetailedCitizens) {
         const rig = humanPool[nearIdx++];
         rig.group.visible = true;
-        rig.group.position.set(wx, groundY, wz);
-        rig.group.rotation.y = cit.yaw ?? 0;
+        const rawAnim: CitizenAnimState = cit.animState ?? 'Idle';
+        let desiredAnim: CitizenAnimState = rawAnim;
+        if (
+          rawAnim !== 'Sit' &&
+          rawAnim !== 'Talk' &&
+          rawAnim !== 'Work' &&
+          rawAnim !== 'Shop' &&
+          (cit.movementState === 'stopped' || cit.movementState === 'waiting' || spd < 0.015)
+        ) {
+          desiredAnim = cit.movementState === 'waiting' ? 'Wait' : 'Idle';
+        }
 
-        const heightScale = cit.age <= 14 ? 0.78 : 0.92 + (seed % 16) * 0.012;
+        const sitElevation = desiredAnim === 'Sit' ? 0.082 : 0;
+        rig.group.position.set(wx, groundY + sitElevation, wz);
+        rig.group.rotation.y = desiredAnim === 'Sit' ? (cit.sittingYaw ?? cit.yaw ?? 0) : (cit.yaw ?? 0);
         rig.group.scale.setScalar(heightScale);
 
-        const desiredAnim: CitizenAnimState = cit.animState ?? 'Idle';
         if (rig.activeState !== desiredAnim) {
           const prevAction = rig.actions[rig.activeState];
           const nextAction = rig.actions[desiredAnim];
@@ -727,44 +795,59 @@ export function createTrafficAndCitizenSystem(
         }
 
         // Couple gait playback rate strictly to physical speed (eliminates foot sliding!)
-        const spd = cit.currentSpeed ?? 0;
-        const speedRatio =
-          desiredAnim === 'Run' || desiredAnim === 'WalkFast' || desiredAnim === 'Walk' || desiredAnim === 'WalkSlow'
-            ? Math.max(0.55, Math.min(2.1, spd / 0.19))
-            : 1.0;
+        const isLocomoting =
+          desiredAnim === 'Run' ||
+          desiredAnim === 'WalkFast' ||
+          desiredAnim === 'Walk' ||
+          desiredAnim === 'WalkSlow';
+        const speedRatio = isLocomoting ? Math.max(0.35, Math.min(2.2, spd / 0.16)) : 1.0;
 
         if (!simPaused) {
           rig.mixer.update(dt * speedRatio);
         }
 
+        // Persistent appearance variety (hairstyle, hat, backpack, skin/pants palette)
+        const hairVariant = Math.abs(seed) % 4;
+        rig.hairMesh.visible = hairVariant !== 3;
+        rig.bunMesh.visible = hairVariant === 1;
+        const hasHat = hairVariant === 2 || hairVariant === 3;
+        rig.hatBrimMesh.visible = hasHat;
+        rig.hatCrownMesh.visible = hasHat;
+        rig.backpackMesh.visible = cit.age <= 22 || (Math.abs(seed >> 4) % 5 === 0);
+
         (rig.torsoMesh.material as THREE.MeshStandardMaterial).color.setHex(shirtHex);
         (rig.leftArmMesh.material as THREE.MeshStandardMaterial).color.setHex(shirtHex);
         (rig.rightArmMesh.material as THREE.MeshStandardMaterial).color.setHex(shirtHex);
         (rig.leftLegMesh.material as THREE.MeshStandardMaterial).color.setHex(
-          PANTS_TONES[seed % PANTS_TONES.length],
+          PANTS_TONES[Math.abs(seed) % PANTS_TONES.length],
         );
         (rig.headMesh.material as THREE.MeshStandardMaterial).color.setHex(
-          SKIN_TONES[(seed >> 3) % SKIN_TONES.length],
+          SKIN_TONES[Math.abs(seed >> 3) % SKIN_TONES.length],
         );
         (rig.hairMesh.material as THREE.MeshStandardMaterial).color.setHex(
-          HAIR_TONES[(seed >> 6) % HAIR_TONES.length],
+          HAIR_TONES[Math.abs(seed >> 6) % HAIR_TONES.length],
         );
+        rig.hatMat.color.setHex(HAT_TONES[Math.abs(seed >> 9) % HAT_TONES.length]);
+        rig.backpackMat.color.setHex(BACKPACK_TONES[Math.abs(seed >> 11) % BACKPACK_TONES.length]);
       } else if (farIdx < maxFarCitizens) {
-        const isMoving = cit.movementState === 'walking' || cit.movementState === 'jogging';
-        const bob = !simPaused && isMoving ? Math.abs(Math.sin(animTime * 6 + i)) * 0.022 : 0;
-        _dummy.position.set(wx, groundY + 0.085 + bob, wz);
+        const isMoving =
+          (cit.movementState === 'walking' || cit.movementState === 'jogging') && spd >= 0.015;
+        const bob = !simPaused && isMoving ? Math.abs(Math.sin(animTime * 6 + i)) * 0.016 : 0;
+        const sitElevation = cit.animState === 'Sit' ? 0.075 : 0;
+
+        _dummy.position.set(wx, groundY + sitElevation + (0.085 + bob) * heightScale, wz);
         _dummy.rotation.set(0, cit.yaw ?? 0, 0);
-        _dummy.scale.set(1, 1, 1);
+        _dummy.scale.setScalar(heightScale);
         _dummy.updateMatrix();
         farLegsInst.setMatrixAt(farIdx, _dummy.matrix);
 
-        _dummy.position.set(wx, groundY + 0.26 + bob, wz);
+        _dummy.position.set(wx, groundY + sitElevation + (0.265 + bob) * heightScale, wz);
         _dummy.updateMatrix();
         farTorsoInst.setMatrixAt(farIdx, _dummy.matrix);
         _color.setHex(shirtHex);
         farTorsoInst.setColorAt(farIdx, _color);
 
-        _dummy.position.set(wx, groundY + 0.41 + bob, wz);
+        _dummy.position.set(wx, groundY + sitElevation + (0.415 + bob) * heightScale, wz);
         _dummy.updateMatrix();
         farHeadInst.setMatrixAt(farIdx, _dummy.matrix);
         farIdx++;
@@ -828,13 +911,21 @@ export function createTrafficAndCitizenSystem(
         (rig.leftLegMesh.material as THREE.Material).dispose();
         (rig.headMesh.material as THREE.Material).dispose();
         (rig.hairMesh.material as THREE.Material).dispose();
+        rig.hatMat.dispose();
+        rig.backpackMat.dispose();
       });
       unitBox.dispose();
       wheelGeo.dispose();
       limbGeo.dispose();
+      shoeGeo.dispose();
       torsoGeo.dispose();
+      backpackGeo.dispose();
       headGeo.dispose();
       hairGeo.dispose();
+      bunGeo.dispose();
+      hatBrimGeo.dispose();
+      hatCrownGeo.dispose();
+      sharedShoeMat.dispose();
       farLegsGeo.dispose();
       carPaintMat.dispose();
       cabinGlassMat.dispose();

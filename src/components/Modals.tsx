@@ -15,7 +15,7 @@ import {
   Volume2,
   X,
 } from 'lucide-react';
-import type { GraphicsQuality, TimePreset } from '../types/game';
+import { BUILDING_CATALOG, type GraphicsQuality, type TimePreset } from '../types/game';
 import { detectGraphicsCapabilities, getQualityProfile } from '../engine/graphicsConfig';
 import { auth, firebaseAvailable } from '../firebase';
 import {
@@ -36,6 +36,10 @@ import { getTile } from '../simulation/tickEngine';
 export const GameModals: React.FC = () => {
   const activeEvent = useGameStore((s) => s.activeEvent);
   const resolveEventChoice = useGameStore((s) => s.resolveEventChoice);
+
+  const pendingDemolition = useGameStore((s) => s.pendingDemolition);
+  const confirmDemolition = useGameStore((s) => s.confirmDemolition);
+  const cancelDemolition = useGameStore((s) => s.cancelDemolition);
 
   const showNewspaperModal = useGameStore((s) => s.showNewspaperModal);
   const setShowNewspaperModal = useGameStore((s) => s.setShowNewspaperModal);
@@ -906,6 +910,62 @@ export const GameModals: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* 7. CONFIRMED DEMOLITION MODAL */}
+      {pendingDemolition && (() => {
+        const targetTile = getTile(tiles, pendingDemolition.x, pendingDemolition.z);
+        const targetDef = targetTile?.building ? BUILDING_CATALOG[targetTile.building.type] : null;
+        const targetLabel = targetDef
+          ? targetDef.name
+          : targetTile?.road === 'avenida'
+          ? 'Avenida Urbana'
+          : targetTile?.road === 'rua'
+          ? 'Rua Local'
+          : 'Estrutura';
+        const refund = targetDef ? Math.round(targetDef.cost * 0.25) : 1000;
+        return (
+          <div className="fixed inset-0 z-50 bg-[#283B49]/70 flex items-center justify-center p-4 pointer-events-auto">
+            <div className="max-w-md w-full bg-[#F2F0E8] border border-[#CBC5B5] rounded-lg shadow-2xl overflow-hidden text-[#283B49]">
+              <div className="px-5 py-3.5 bg-[#283B49] text-[#F2F0E8] flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Trash2 className="w-4 h-4 text-[#D2A97B]" />
+                  <h3 className="font-display text-sm font-bold">
+                    Confirmar Demolição · Lote ({pendingDemolition.x}, {pendingDemolition.z})
+                  </h3>
+                </div>
+                <button onClick={cancelDemolition} className="text-[#D2A97B] hover:text-white">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="p-5 space-y-4 text-xs">
+                <p className="leading-relaxed">
+                  Deseja realmente demolir <strong>{targetLabel}</strong> no lote ({pendingDemolition.x}, {pendingDemolition.z})?
+                </p>
+                <div className="bg-[#E6E2D6] border border-[#CBC5B5] rounded p-3 flex items-center justify-between">
+                  <span className="text-[#536877]">Reaproveitamento de materiais:</span>
+                  <span className="font-mono-num font-bold text-[#496B57]">
+                    +R$ {refund.toLocaleString('pt-BR')}
+                  </span>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={cancelDemolition}
+                    className="flex-1 py-2 rounded bg-[#E6E2D6] border border-[#CBC5B5] hover:border-[#283B49] font-semibold"
+                  >
+                    Cancelar (Esc)
+                  </button>
+                  <button
+                    onClick={confirmDemolition}
+                    className="flex-1 py-2 rounded bg-[#B43B3B] hover:bg-[#992E2E] text-[#F2F0E8] font-semibold"
+                  >
+                    Confirmar Demolição
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </>
   );
 };

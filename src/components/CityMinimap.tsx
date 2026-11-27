@@ -76,10 +76,10 @@ export const CityMinimap: React.FC = () => {
   };
 
   return (
-    <div className="bg-slate-950/94 border border-slate-800 rounded-lg p-1.5 shadow-2xl">
-      <div className="flex items-center justify-between px-1 pb-1 text-[10px] text-slate-400 font-medium tracking-wide uppercase">
+    <div className="bg-[#F2F0E8] border border-[#CBC5B5] rounded-lg p-1.5 shadow-xl text-[#283B49]">
+      <div className="flex items-center justify-between px-1 pb-1 text-[10px] text-[#536877] font-semibold tracking-wide uppercase">
         <span>Mapa Tático</span>
-        <span className="font-mono-num text-slate-300">
+        <span className="font-mono-num text-[#283B49]">
           {cameraFocusTile.x},{cameraFocusTile.z}
         </span>
       </div>
@@ -89,7 +89,7 @@ export const CityMinimap: React.FC = () => {
         height={144}
         onClick={handleMapClick}
         title="Clique para mover a câmera para esta região"
-        className="w-36 h-36 rounded border border-slate-800 cursor-crosshair block"
+        className="w-36 h-36 rounded border border-[#CBC5B5] cursor-crosshair block"
       />
     </div>
   );
