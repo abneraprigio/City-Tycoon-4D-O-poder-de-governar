@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import {
+  Clock,
   Cloud,
   Gavel,
   LogIn,
@@ -11,9 +12,10 @@ import {
   Sliders,
   Trash2,
   Trophy,
+  Volume2,
   X,
 } from 'lucide-react';
-import type { GraphicsQuality } from '../types/game';
+import type { GraphicsQuality, TimePreset } from '../types/game';
 import { detectGraphicsCapabilities, getQualityProfile } from '../engine/graphicsConfig';
 import { auth, firebaseAvailable } from '../firebase';
 import {
@@ -66,6 +68,9 @@ export const GameModals: React.FC = () => {
   const graphicsQuality = useGameStore((s) => s.graphicsQuality);
   const recommendedQuality = useGameStore((s) => s.recommendedQuality);
   const setGraphicsQuality = useGameStore((s) => s.setGraphicsQuality);
+  const timeConfig = useGameStore((s) => s.timeConfig);
+  const setTimeConfig = useGameStore((s) => s.setTimeConfig);
+  const setTimePreset = useGameStore((s) => s.setTimePreset);
 
   const gpuCaps = useMemo(() => detectGraphicsCapabilities(), []);
 
@@ -582,15 +587,15 @@ export const GameModals: React.FC = () => {
           </div>
         </div>
       )}
-      {/* 6. GRAPHICS QUALITY SETTINGS MODAL */}
+      {/* 6. SETTINGS MODAL (TIME, LIVING WORLD, AUDIO & GRAPHICS) */}
       {showSettingsModal && (
         <div className="fixed inset-0 z-40 bg-slate-950/78 flex items-center justify-center p-4 pointer-events-auto">
-          <div className="max-w-lg w-full bg-slate-900 border border-slate-700 rounded-lg shadow-2xl overflow-hidden">
-            <div className="px-5 py-3.5 border-b border-slate-800 flex items-center justify-between">
+          <div className="max-w-2xl w-full max-h-[88vh] bg-slate-900 border border-slate-700 rounded-lg shadow-2xl flex flex-col overflow-hidden">
+            <div className="px-5 py-3.5 border-b border-slate-800 flex items-center justify-between shrink-0">
               <div className="flex items-center gap-2">
                 <Sliders className="w-4 h-4 text-amber-400" />
                 <h2 className="font-display text-base font-bold text-white">
-                  Qualidade Gráfica 3D
+                  Configurações do Mundo Vivo & Gráficos
                 </h2>
               </div>
               <button
@@ -601,87 +606,293 @@ export const GameModals: React.FC = () => {
               </button>
             </div>
 
-            <div className="p-5 space-y-4 text-xs">
-              <div className="bg-slate-950 border border-slate-800 rounded p-3 space-y-1">
-                <div className="flex justify-between gap-2">
-                  <span className="text-slate-400">Placa / Renderizador WebGL:</span>
-                  <span className="text-slate-200 font-medium truncate max-w-[260px]">
-                    {gpuCaps.gpuRenderer}
+            <div className="p-5 overflow-y-auto hud-scroll space-y-5 text-xs">
+              {/* Temporal Pace Section */}
+              <section className="bg-slate-950 border border-slate-800 rounded p-3.5 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-white flex items-center gap-1.5">
+                    <Clock className="w-3.5 h-3.5 text-amber-400" />
+                    Ritmo Temporal da Cidade
+                  </span>
+                  <span className="font-mono-num text-amber-300 font-semibold">
+                    {timeConfig.secondsPerDay}s / dia (em 1x)
                   </span>
                 </div>
-                <div className="flex justify-between gap-2">
-                  <span className="text-slate-400">Perfil Recomendado:</span>
-                  <span className="text-emerald-400 font-semibold uppercase">
-                    {recommendedQuality}
-                  </span>
-                </div>
-              </div>
 
-              <div className="grid grid-cols-2 gap-2">
-                {(
-                  [
-                    {
-                      id: 'low',
-                      title: 'Baixa',
-                      desc: 'Prioriza fluidez máxima. Sombras simples, 512px, sem vento.',
-                    },
-                    {
-                      id: 'medium',
-                      title: 'Média',
-                      desc: 'Equilíbrio urbano: sombras 1024px, vento na vegetação e água.',
-                    },
-                    {
-                      id: 'high',
-                      title: 'Alta',
-                      desc: 'Texturas 1024px, sombras suaves 2048px, vegetação densa.',
-                    },
-                    {
-                      id: 'ultra',
-                      title: 'Ultra',
-                      desc: 'Sombras 4096px + Bloom seletivo e pós-processamento (GPU dedicada).',
-                    },
-                  ] as { id: GraphicsQuality; title: string; desc: string }[]
-                ).map((opt) => {
-                  const active = graphicsQuality === opt.id;
-                  const prof = getQualityProfile(opt.id, gpuCaps.isSoftwareGl);
-                  return (
-                    <button
-                      key={opt.id}
-                      onClick={() => {
-                        setGraphicsQuality(opt.id);
-                        showToast(`Qualidade gráfica alterada para ${opt.title}.`, 'success');
-                      }}
-                      className={`text-left p-3 rounded border transition-colors ${
-                        active
-                          ? 'bg-amber-500/15 border-amber-400'
-                          : 'bg-slate-950 border-slate-800 hover:border-slate-600'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="font-display font-bold text-sm text-white">
-                          {opt.title}
-                        </span>
-                        {opt.id === recommendedQuality && (
-                          <span className="text-[10px] text-emerald-400 font-medium">
-                            Recomendado
+                <div className="grid grid-cols-3 gap-2">
+                  {(
+                    [
+                      { id: 'relaxed', title: 'Relaxado', desc: '300s/dia · Contemplativo' },
+                      { id: 'balanced', title: 'Equilibrado', desc: '180s/dia · Padrão' },
+                      { id: 'strategic', title: 'Estratégico', desc: '60s/dia · Dinâmico' },
+                    ] as { id: TimePreset; title: string; desc: string }[]
+                  ).map((preset) => {
+                    const active = timeConfig.preset === preset.id;
+                    return (
+                      <button
+                        key={preset.id}
+                        onClick={() => setTimePreset(preset.id)}
+                        className={`p-2 rounded border text-left transition-colors ${
+                          active
+                            ? 'bg-amber-500/15 border-amber-400 text-white'
+                            : 'bg-slate-900 border-slate-800 text-slate-300 hover:border-slate-600'
+                        }`}
+                      >
+                        <div className="font-semibold">{preset.title}</div>
+                        <div className="text-[10px] text-slate-400 mt-0.5">{preset.desc}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <label className="block space-y-1">
+                  <div className="flex justify-between text-[11px] text-slate-400">
+                    <span>Ajuste fino: Duração de 1 dia (60s a 300s)</span>
+                    <span className="font-mono-num text-slate-200">{timeConfig.secondsPerDay}s</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={60}
+                    max={300}
+                    step={10}
+                    value={timeConfig.secondsPerDay}
+                    onChange={(e) => setTimeConfig({ secondsPerDay: Number(e.target.value) })}
+                    className="w-full accent-amber-400"
+                  />
+                </label>
+              </section>
+
+              {/* Living World Simulation Sliders */}
+              <section className="bg-slate-950 border border-slate-800 rounded p-3.5 space-y-3">
+                <div className="font-semibold text-white">Simulação Urbana & Câmera</div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <label className="block space-y-1">
+                    <div className="flex justify-between text-[11px] text-slate-400">
+                      <span>Velocidade de NPCs</span>
+                      <span className="font-mono-num text-slate-200">
+                        {timeConfig.npcSpeedMultiplier.toFixed(1)}x
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.5}
+                      max={2.0}
+                      step={0.1}
+                      value={timeConfig.npcSpeedMultiplier}
+                      onChange={(e) =>
+                        setTimeConfig({ npcSpeedMultiplier: Number(e.target.value) })
+                      }
+                      className="w-full accent-sky-400"
+                    />
+                  </label>
+
+                  <label className="block space-y-1">
+                    <div className="flex justify-between text-[11px] text-slate-400">
+                      <span>Densidade de Pedestres</span>
+                      <span className="font-mono-num text-slate-200">
+                        {Math.round(timeConfig.pedestrianDensity * 100)}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.2}
+                      max={1.5}
+                      step={0.1}
+                      value={timeConfig.pedestrianDensity}
+                      onChange={(e) =>
+                        setTimeConfig({ pedestrianDensity: Number(e.target.value) })
+                      }
+                      className="w-full accent-sky-400"
+                    />
+                  </label>
+
+                  <label className="block space-y-1">
+                    <div className="flex justify-between text-[11px] text-slate-400">
+                      <span>Intensidade do Tráfego</span>
+                      <span className="font-mono-num text-slate-200">
+                        {Math.round(timeConfig.trafficIntensity * 100)}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.2}
+                      max={1.5}
+                      step={0.1}
+                      value={timeConfig.trafficIntensity}
+                      onChange={(e) =>
+                        setTimeConfig({ trafficIntensity: Number(e.target.value) })
+                      }
+                      className="w-full accent-sky-400"
+                    />
+                  </label>
+
+                  <label className="block space-y-1">
+                    <div className="flex justify-between text-[11px] text-slate-400">
+                      <span>Velocidade da Câmera</span>
+                      <span className="font-mono-num text-slate-200">
+                        {timeConfig.cameraSpeed.toFixed(1)}x
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.4}
+                      max={2.0}
+                      step={0.1}
+                      value={timeConfig.cameraSpeed}
+                      onChange={(e) => setTimeConfig({ cameraSpeed: Number(e.target.value) })}
+                      className="w-full accent-sky-400"
+                    />
+                  </label>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                  <label className="flex items-center justify-between p-2 rounded bg-slate-900 border border-slate-800 cursor-pointer">
+                    <span className="text-slate-200">Construção Instantânea (Criativo)</span>
+                    <input
+                      type="checkbox"
+                      checked={timeConfig.creativeInstantBuild}
+                      onChange={(e) =>
+                        setTimeConfig({ creativeInstantBuild: e.target.checked })
+                      }
+                      className="accent-amber-400"
+                    />
+                  </label>
+
+                  <label className="flex items-center justify-between p-2 rounded bg-slate-900 border border-slate-800 cursor-pointer">
+                    <span className="text-slate-200">Modo Diagnóstico 3D (Grafos)</span>
+                    <input
+                      type="checkbox"
+                      checked={timeConfig.debugOverlay}
+                      onChange={(e) => setTimeConfig({ debugOverlay: e.target.checked })}
+                      className="accent-emerald-400"
+                    />
+                  </label>
+                </div>
+              </section>
+
+              {/* Procedural Ambient Audio */}
+              <section className="bg-slate-950 border border-slate-800 rounded p-3.5 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-white flex items-center gap-1.5">
+                    <Volume2 className="w-3.5 h-3.5 text-emerald-400" />
+                    Áudio Ambiente Urbano (Procedural)
+                  </span>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <span className="text-[11px] text-slate-400">
+                      {timeConfig.ambientAudioEnabled ? 'Ativo' : 'Silenciado'}
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={timeConfig.ambientAudioEnabled}
+                      onChange={(e) =>
+                        setTimeConfig({ ambientAudioEnabled: e.target.checked })
+                      }
+                      className="accent-emerald-400"
+                    />
+                  </label>
+                </div>
+                <label className="block space-y-1">
+                  <div className="flex justify-between text-[11px] text-slate-400">
+                    <span>Volume do Ambiente</span>
+                    <span className="font-mono-num text-slate-200">
+                      {Math.round(timeConfig.ambientVolume * 100)}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={timeConfig.ambientVolume}
+                    onChange={(e) => setTimeConfig({ ambientVolume: Number(e.target.value) })}
+                    className="w-full accent-emerald-400"
+                  />
+                </label>
+              </section>
+
+              {/* Graphics Quality Section */}
+              <section className="space-y-2.5">
+                <div className="bg-slate-950 border border-slate-800 rounded p-3 space-y-1">
+                  <div className="flex justify-between gap-2">
+                    <span className="text-slate-400">Placa / Renderizador WebGL:</span>
+                    <span className="text-slate-200 font-medium truncate max-w-[260px]">
+                      {gpuCaps.gpuRenderer}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-2">
+                    <span className="text-slate-400">Perfil Recomendado:</span>
+                    <span className="text-emerald-400 font-semibold uppercase">
+                      {recommendedQuality}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  {(
+                    [
+                      {
+                        id: 'low',
+                        title: 'Baixa',
+                        desc: 'Prioriza fluidez máxima. Sombras simples, 512px, sem vento.',
+                      },
+                      {
+                        id: 'medium',
+                        title: 'Média',
+                        desc: 'Equilíbrio urbano: sombras 1024px, vento na vegetação e água.',
+                      },
+                      {
+                        id: 'high',
+                        title: 'Alta',
+                        desc: 'Texturas 1024px, sombras suaves 2048px, vegetação densa.',
+                      },
+                      {
+                        id: 'ultra',
+                        title: 'Ultra',
+                        desc: 'Sombras 4096px + Bloom seletivo e pós-processamento (GPU dedicada).',
+                      },
+                    ] as { id: GraphicsQuality; title: string; desc: string }[]
+                  ).map((opt) => {
+                    const active = graphicsQuality === opt.id;
+                    const prof = getQualityProfile(opt.id, gpuCaps.isSoftwareGl);
+                    return (
+                      <button
+                        key={opt.id}
+                        onClick={() => {
+                          setGraphicsQuality(opt.id);
+                          showToast(`Qualidade gráfica alterada para ${opt.title}.`, 'success');
+                        }}
+                        className={`text-left p-3 rounded border transition-colors ${
+                          active
+                            ? 'bg-amber-500/15 border-amber-400'
+                            : 'bg-slate-950 border-slate-800 hover:border-slate-600'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="font-display font-bold text-sm text-white">
+                            {opt.title}
                           </span>
-                        )}
-                      </div>
-                      <p className="text-[11px] text-slate-400 mt-1 leading-snug">{opt.desc}</p>
-                      <div className="mt-2 text-[10px] font-mono-num text-slate-500">
-                        Tex {prof.textureSize}px · Sombra {prof.shadowsEnabled ? `${prof.shadowMapSize}px` : 'Off'}
-                        {prof.enablePostProcessing ? ' · Bloom' : ''}
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
+                          {opt.id === recommendedQuality && (
+                            <span className="text-[10px] text-emerald-400 font-medium">
+                              Recomendado
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[11px] text-slate-400 mt-1 leading-snug">{opt.desc}</p>
+                        <div className="mt-2 text-[10px] font-mono-num text-slate-500">
+                          Tex {prof.textureSize}px · Sombra {prof.shadowsEnabled ? `${prof.shadowMapSize}px` : 'Off'}
+                          {prof.enablePostProcessing ? ' · Bloom' : ''}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
 
-              {gpuCaps.isSoftwareGl && (
-                <p className="text-[11px] text-amber-300 bg-amber-950/50 border border-amber-800/70 rounded p-2.5">
-                  Modo de compatibilidade WebGL por software detectado: pós-processamento pesado e sombras caras são desativados automaticamente para manter a cidade estável.
-                </p>
-              )}
+                {gpuCaps.isSoftwareGl && (
+                  <p className="text-[11px] text-amber-300 bg-amber-950/50 border border-amber-800/70 rounded p-2.5">
+                    Modo de compatibilidade WebGL por software detectado: pós-processamento pesado e sombras caras são desativados automaticamente para manter a cidade estável.
+                  </p>
+                )}
+              </section>
 
               <div className="flex justify-end">
                 <button

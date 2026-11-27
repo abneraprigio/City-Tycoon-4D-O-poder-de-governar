@@ -2,31 +2,43 @@ import { create } from 'zustand';
 import {
   Achievement,
   BUILDING_CATALOG,
+  BuildingLifecycleStage,
   BuildingTypeId,
   CameraMode,
   CitizenAgent,
   CitizenState,
   CityBill,
   CityIndicators,
+  CitySimulationStats,
   Councilor,
   DecisionLogEntry,
   DEVELOPMENT_LEVELS,
   EconomyState,
+  EmergencyDispatch,
   EndGameOutcome,
   EndGameReport,
   GameEvent,
   GameEventChoice,
+  GameTimeConfig,
   GraphicsQuality,
   GRID_SIZE,
+  Household,
   InteractionTool,
   NewsArticle,
   PlacedBuilding,
   PoliticsState,
+  RoadVehicleSim,
+  SpeedValue,
   TerrainType,
   ThematicMapMode,
   TileConflict,
   TileData,
   TileOwnerType,
+  TimePreset,
+  TrafficSignalNode,
+  TransitLine,
+  Workplace,
+  ZoningType,
 } from '../types/game';
 import {
   createInitialAchievements,
@@ -42,11 +54,45 @@ import {
   getTile,
   processMonthlyCycle,
   recomputeCityGridMetrics,
-  stepCitizensMotion,
   updateCitizenAttributesAndThoughts,
 } from '../simulation/tickEngine';
 import { clearCityLocal, loadCityLocalSafe, saveCityLocal } from '../services/persistence';
 import { detectGraphicsCapabilities } from '../engine/graphicsConfig';
+import {
+  applyTimePreset,
+  createDefaultTimeConfig,
+  FIXED_SIM_DT,
+  SimulationClock,
+} from '../simulation/core/simulationClock';
+import { SimulationScheduler } from '../simulation/core/simulationScheduler';
+import { UrbanNavigationCache } from '../simulation/navigation/routeCache';
+import { computeBuildingAccess, computeFacingRoadRotation } from '../simulation/navigation/obstacleSystem';
+import {
+  normalizeCitizensForLivingWorld,
+  stepCitizenEcosystem,
+} from '../simulation/agents/citizenEngine';
+import { reconcileHouseholds } from '../simulation/agents/householdEngine';
+import { reconcileWorkplaces } from '../simulation/agents/employmentEngine';
+import {
+  createInitialTrafficState,
+  stepTrafficEngine,
+  TrafficSystemState,
+} from '../simulation/traffic/trafficEngine';
+import { initializeBuildingLifecycle, stepBuildingLifecycles } from '../simulation/urban/buildingLifecycle';
+import { inferBuildingZone } from '../simulation/urban/zoningEngine';
+
+const navCache = new UrbanNavigationCache();
+const simClock = new SimulationClock();
+const simScheduler = new SimulationScheduler();
+simScheduler.register('needs', 0.85);
+simScheduler.register('stats', 0.45);
+
+const trafficSystemRuntime: TrafficSystemState = createInitialTrafficState();
+let citizenBatchCursor = 0;
+
+export function getNavigationCache(): UrbanNavigationCache {
+  return navCache;
+}
 
 export type LeftTabId =
   | 'build'
@@ -87,12 +133,19 @@ export interface GameState {
   year: number;
   hourOfDay: number; // 0..24
   dayAccumulator: number;
-  speed: 0 | 1 | 2 | 4 | 8;
+  speed: SpeedValue;
+  timeConfig: GameTimeConfig;
   developmentLevel: number;
   hadDebtBefore: boolean;
 
   tiles: TileData[];
   citizens: CitizenAgent[];
+  households: Household[];
+  workplaces: Workplace[];
+  trafficSignals: TrafficSignalNode[];
+  transitLines: TransitLine[];
+  vehicles: RoadVehicleSim[];
+  dispatches: EmergencyDispatch[];
   economy: EconomyState;
   indicators: CityIndicators;
   politics: PoliticsState;
@@ -108,10 +161,12 @@ export interface GameState {
   activeTool: InteractionTool;
   selectedBuildType: BuildingTypeId | null;
   buildRotation: number; // 0..3
+  manualBuildRotated: boolean;
   moveSourceTile: { x: number; z: number } | null;
   selectedTileCoords: { x: number; z: number } | null;
   selectedCitizenId: string | null;
   followedCitizenId: string | null;
+  showCitizenRoute: boolean;
   thematicMode: ThematicMapMode;
   activeLeftTab: LeftTabId | null;
   zenMode: boolean;
@@ -127,10 +182,18 @@ export interface GameState {
   toast: ToastNotice | null;
   gridVersion: number; // increments when 3D tile meshes need sync
   thematicVersion: number; // increments when thematic tile colors need sync
+  simStats: CitySimulationStats;
 
   // Actions
   advanceSimulation: (dtSeconds: number) => void;
-  setSpeed: (speed: 0 | 1 | 2 | 4 | 8) => void;
+  setSpeed: (speed: SpeedValue) => void;
+  setTimeConfig: (partial: Partial<GameTimeConfig>) => void;
+  setTimePreset: (preset: TimePreset) => void;
+  advanceToNextDay: () => void;
+  advanceToMonthEnd: () => void;
+  reportRenderFps: (fps: number) => void;
+  setShowCitizenRoute: (show: boolean) => void;
+  toggleBusStop: (x: number, z: number) => void;
   setActiveTool: (tool: InteractionTool, buildType?: BuildingTypeId | null) => void;
   rotateBuildPreview: () => void;
   setThematicMode: (mode: ThematicMapMode) => void;
@@ -182,6 +245,55 @@ export interface GameState {
   clearToast: () => void;
 }
 
+function buildLivingWorldRuntime(
+  tiles: TileData[],
+  citizens: CitizenAgent[],
+  indicators: CityIndicators,
+  economy: EconomyState,
+  timeConfig: GameTimeConfig,
+  year: number,
+  day: number,
+) {
+  normalizeCitizensForLivingWorld(citizens, year, day);
+  const households = reconcileHouseholds(tiles, citizens, []);
+  const workplaces = reconcileWorkplaces(tiles, citizens);
+  navCache.ensureFresh(tiles, 1);
+  trafficSystemRuntime.vehicles = [];
+  trafficSystemRuntime.signals = [];
+  trafficSystemRuntime.transitLines = [];
+  trafficSystemRuntime.dispatches = [];
+  stepTrafficEngine(trafficSystemRuntime, tiles, citizens, navCache, 0.05, timeConfig);
+
+  const simStats: CitySimulationStats = {
+    fps: 60,
+    simStepMs: 0.4,
+    activeNpcs: citizens.length,
+    insideBuildingNpcs: citizens.filter((c) => Boolean(c.insideBuildingId)).length,
+    blockedNpcs: citizens.filter((c) => c.behaviorState === 'WaitingForPath').length,
+    activeVehicles: trafficSystemRuntime.vehicles.length,
+    busPassengers: trafficSystemRuntime.vehicles.reduce(
+      (acc, v) => acc + (v.passengerIds?.length ?? 0),
+      0,
+    ),
+    pedestrianNodes: navCache.pedestrianGraph.nodes.size,
+    roadNodes: navCache.roadGraph.nodes.size,
+    cachedRoutes: navCache.cacheCount,
+  };
+
+  void indicators;
+  void economy;
+
+  return {
+    households,
+    workplaces,
+    trafficSignals: trafficSystemRuntime.signals,
+    transitLines: trafficSystemRuntime.transitLines,
+    vehicles: trafficSystemRuntime.vehicles,
+    dispatches: trafficSystemRuntime.dispatches,
+    simStats,
+  };
+}
+
 export function buildFreshCityState(cityName = 'Nova Aurora', mayorName = 'Prefeito(a) Silva') {
   const tiles = createInitialTiles();
   const economy = createInitialEconomy();
@@ -191,6 +303,8 @@ export function buildFreshCityState(cityName = 'Nova Aurora', mayorName = 'Prefe
   recomputeCityGridMetrics(tiles, economy, politics);
   const citizens = createInitialCitizens(tiles);
   updateCitizenAttributesAndThoughts(citizens, tiles, indicators, economy);
+  const timeConfig = createDefaultTimeConfig();
+  const runtime = buildLivingWorldRuntime(tiles, citizens, indicators, economy, timeConfig, 1, 1);
 
   return {
     cityName,
@@ -199,11 +313,13 @@ export function buildFreshCityState(cityName = 'Nova Aurora', mayorName = 'Prefe
     year: 1,
     hourOfDay: 9.0,
     dayAccumulator: 0,
-    speed: 1 as 0 | 1 | 2 | 4 | 8,
+    speed: 1 as SpeedValue,
+    timeConfig,
     developmentLevel: 1,
     hadDebtBefore: false,
     tiles,
     citizens,
+    ...runtime,
     economy,
     indicators,
     politics,
@@ -272,6 +388,24 @@ export function isTileEligibleForPublicSale(tile: TileData | null): tile is Tile
   );
 }
 
+const VALID_LIFECYCLE_STAGES = new Set<BuildingLifecycleStage>([
+  'planned',
+  'construction_site',
+  'under_construction',
+  'operational',
+  'remodeling',
+  'abandoned',
+]);
+const VALID_ZONES = new Set<ZoningType>([
+  'none',
+  'residential',
+  'commercial',
+  'industrial',
+  'mixed',
+  'civic',
+  'green',
+]);
+
 function validatePlacedBuilding(raw: unknown): PlacedBuilding | null {
   if (!isPlainObject(raw)) return null;
   if (!isValidBuildingType(raw.type)) return null;
@@ -292,6 +426,17 @@ function validatePlacedBuilding(raw: unknown): PlacedBuilding | null {
     connectedRoad: Boolean(raw.connectedRoad),
     builtAtDay: isFiniteNum(raw.builtAtDay) ? Math.max(1, Math.round(raw.builtAtDay)) : 1,
     condition: isFiniteNum(raw.condition) ? clampNum(Math.round(raw.condition), 0, 100) : 100,
+    constructionStage: VALID_LIFECYCLE_STAGES.has(raw.constructionStage as BuildingLifecycleStage)
+      ? (raw.constructionStage as BuildingLifecycleStage)
+      : 'operational',
+    constructionProgress: isFiniteNum(raw.constructionProgress)
+      ? clampNum(Math.round(raw.constructionProgress), 0, 100)
+      : 100,
+    occupantIds: Array.isArray(raw.occupantIds)
+      ? raw.occupantIds.filter((id): id is string => typeof id === 'string').slice(0, 40)
+      : [],
+    variantSeed: isFiniteNum(raw.variantSeed) ? Math.round(raw.variantSeed) : undefined,
+    zone: VALID_ZONES.has(raw.zone as ZoningType) ? (raw.zone as ZoningType) : undefined,
   };
 }
 
@@ -361,6 +506,8 @@ function validateTile(raw: unknown, expectedX: number, expectedZ: number): TileD
     leisureCoverage: isFiniteNum(raw.leisureCoverage) ? clampNum(Math.round(raw.leisureCoverage), 0, 100) : 30,
     trafficLoad: isFiniteNum(raw.trafficLoad) ? clampNum(Math.round(raw.trafficLoad), 0, 100) : 0,
     conflict,
+    zone: VALID_ZONES.has(raw.zone as ZoningType) ? (raw.zone as ZoningType) : undefined,
+    busStop: typeof raw.busStop === 'boolean' ? raw.busStop : false,
   };
 }
 
@@ -626,13 +773,16 @@ function validateCitizens(raw: unknown, tiles: TileData[]): CitizenAgent[] | nul
     result.push({
       id: item.id.slice(0, 80),
       name: item.name.slice(0, 80),
-      age: clampNum(Math.round(item.age), 14, 110),
+      age: clampNum(Math.round(item.age), 8, 110),
       profession: item.profession.slice(0, 80),
       education: item.education as CitizenAgent['education'],
       income: Math.max(0, Math.round(item.income)),
       employedAtId: typeof item.employedAtId === 'string' ? item.employedAtId.slice(0, 120) : null,
       employedAtName: typeof item.employedAtName === 'string' ? item.employedAtName.slice(0, 80) : null,
       homeTileKey: typeof item.homeTileKey === 'string' ? item.homeTileKey.slice(0, 20) : null,
+      residenceBuildingId:
+        typeof item.residenceBuildingId === 'string' ? item.residenceBuildingId.slice(0, 120) : null,
+      householdId: typeof item.householdId === 'string' ? item.householdId.slice(0, 120) : null,
       health: clampNum(Math.round(item.health), 0, 100),
       happiness: clampNum(Math.round(item.happiness), 0, 100),
       needs: {
@@ -641,6 +791,10 @@ function validateCitizens(raw: unknown, tiles: TileData[]): CitizenAgent[] | nul
         health: clampNum(Math.round(n.health), 0, 100),
         education: clampNum(Math.round(n.education), 0, 100),
         safety: clampNum(Math.round(n.safety), 0, 100),
+        energy: isFiniteNum(n.energy) ? clampNum(Math.round(n.energy), 0, 100) : 78,
+        hunger: isFiniteNum(n.hunger) ? clampNum(Math.round(n.hunger), 0, 100) : 76,
+        leisure: isFiniteNum(n.leisure) ? clampNum(Math.round(n.leisure), 0, 100) : 68,
+        transport: isFiniteNum(n.transport) ? clampNum(Math.round(n.transport), 0, 100) : 74,
       },
       state: item.state as CitizenState,
       opinion: clampNum(Math.round(item.opinion), 0, 100),
@@ -651,6 +805,14 @@ function validateCitizens(raw: unknown, tiles: TileData[]): CitizenAgent[] | nul
       targetZ: clampNum(item.targetZ, 0, GRID_SIZE - 1),
       speed: clampNum(item.speed, 0.2, 4.0),
       shirtColor: Math.round(item.shirtColor),
+      insideBuildingId: typeof item.insideBuildingId === 'string' ? item.insideBuildingId.slice(0, 120) : null,
+      balance: isFiniteNum(item.balance) ? Math.max(0, Math.round(item.balance)) : undefined,
+      birthDay: isFiniteNum(item.birthDay) ? clampNum(Math.round(item.birthDay), 1, 30) : undefined,
+      birthYear: isFiniteNum(item.birthYear) ? Math.max(1, Math.round(item.birthYear)) : undefined,
+      yaw: isFiniteNum(item.yaw) ? item.yaw : 0,
+      history: Array.isArray(item.history)
+        ? item.history.filter((h): h is string => typeof h === 'string').slice(-8)
+        : undefined,
     });
   }
   return result;
@@ -891,12 +1053,56 @@ export function hydrateFromSnapshot(snap: unknown) {
     }
   }
 
-  const validSpeed =
-    snap.speed === 0 || snap.speed === 1 || snap.speed === 2 || snap.speed === 4 || snap.speed === 8
-      ? (snap.speed as 0 | 1 | 2 | 4 | 8)
-      : (1 as const);
+  const validSpeed: SpeedValue =
+    snap.speed === 0 ||
+    snap.speed === 0.5 ||
+    snap.speed === 1 ||
+    snap.speed === 2 ||
+    snap.speed === 4 ||
+    snap.speed === 8
+      ? (snap.speed as SpeedValue)
+      : 1;
+
+  const baseTime = createDefaultTimeConfig();
+  const rawTc = isPlainObject(snap.timeConfig) ? snap.timeConfig : {};
+  const preset: TimePreset =
+    rawTc.preset === 'relaxed' || rawTc.preset === 'balanced' || rawTc.preset === 'strategic'
+      ? rawTc.preset
+      : baseTime.preset;
+  const timeConfig: GameTimeConfig = {
+    secondsPerDay: isFiniteNum(rawTc.secondsPerDay)
+      ? clampNum(Math.round(rawTc.secondsPerDay), 60, 300)
+      : baseTime.secondsPerDay,
+    preset,
+    npcSpeedMultiplier: isFiniteNum(rawTc.npcSpeedMultiplier)
+      ? clampNum(Number(rawTc.npcSpeedMultiplier.toFixed(2)), 0.5, 2.0)
+      : baseTime.npcSpeedMultiplier,
+    trafficIntensity: isFiniteNum(rawTc.trafficIntensity)
+      ? clampNum(Number(rawTc.trafficIntensity.toFixed(2)), 0.2, 1.5)
+      : baseTime.trafficIntensity,
+    pedestrianDensity: isFiniteNum(rawTc.pedestrianDensity)
+      ? clampNum(Number(rawTc.pedestrianDensity.toFixed(2)), 0.2, 1.5)
+      : baseTime.pedestrianDensity,
+    vegetationDensity: isFiniteNum(rawTc.vegetationDensity)
+      ? clampNum(Number(rawTc.vegetationDensity.toFixed(2)), 0.2, 1.5)
+      : baseTime.vegetationDensity,
+    cameraSpeed: isFiniteNum(rawTc.cameraSpeed)
+      ? clampNum(Number(rawTc.cameraSpeed.toFixed(2)), 0.4, 2.0)
+      : baseTime.cameraSpeed,
+    ambientAudioEnabled:
+      typeof rawTc.ambientAudioEnabled === 'boolean'
+        ? rawTc.ambientAudioEnabled
+        : baseTime.ambientAudioEnabled,
+    ambientVolume: isFiniteNum(rawTc.ambientVolume)
+      ? clampNum(Number(rawTc.ambientVolume.toFixed(2)), 0, 1)
+      : baseTime.ambientVolume,
+    debugOverlay: typeof rawTc.debugOverlay === 'boolean' ? rawTc.debugOverlay : false,
+    creativeInstantBuild:
+      typeof rawTc.creativeInstantBuild === 'boolean' ? rawTc.creativeInstantBuild : false,
+  };
 
   recomputeCityGridMetrics(tiles, economy, politics);
+  const runtime = buildLivingWorldRuntime(tiles, citizens, indicators, economy, timeConfig, year, day);
 
   return {
     cityName:
@@ -908,11 +1114,13 @@ export function hydrateFromSnapshot(snap: unknown) {
     year,
     hourOfDay,
     dayAccumulator,
-    speed: endGameReport ? (0 as const) : validSpeed,
+    speed: endGameReport ? (0 as SpeedValue) : validSpeed,
+    timeConfig,
     developmentLevel,
     hadDebtBefore: Boolean(snap.hadDebtBefore),
     tiles,
     citizens,
+    ...runtime,
     economy,
     indicators,
     politics,
@@ -960,10 +1168,12 @@ export const useGameStore = create<GameState>((set, get) => ({
   activeTool: 'select',
   selectedBuildType: null,
   buildRotation: 0,
+  manualBuildRotated: false,
   moveSourceTile: null,
   selectedTileCoords: null,
   selectedCitizenId: null,
   followedCitizenId: null,
+  showCitizenRoute: true,
   thematicMode: 'normal',
   activeLeftTab: 'build',
   zenMode: false,
@@ -994,14 +1204,67 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   setSpeed: (speed) => set({ speed }),
 
+  setTimeConfig: (partial) =>
+    set((s) => ({
+      timeConfig: {
+        ...s.timeConfig,
+        ...partial,
+        secondsPerDay:
+          partial.secondsPerDay !== undefined
+            ? clampNum(Math.round(partial.secondsPerDay), 60, 300)
+            : s.timeConfig.secondsPerDay,
+      },
+    })),
+
+  setTimePreset: (preset) =>
+    set((s) => ({
+      timeConfig: applyTimePreset(s.timeConfig, preset),
+    })),
+
+  setShowCitizenRoute: (showCitizenRoute) => set({ showCitizenRoute }),
+
+  reportRenderFps: (fps) =>
+    set((s) => ({
+      simStats: {
+        ...s.simStats,
+        fps: Math.round(s.simStats.fps * 0.8 + fps * 0.2),
+      },
+    })),
+
+  toggleBusStop: (x, z) => {
+    const state = get();
+    const tile = getTile(state.tiles, x, z);
+    if (!tile || tile.road === 'none') {
+      state.showToast('Pontos de ônibus só podem ser instalados em ruas ou avenidas.', 'warning');
+      return;
+    }
+    const tiles = state.tiles.map((t) => ({ ...t }));
+    const target = tiles[z * GRID_SIZE + x];
+    target.busStop = !target.busStop;
+    trafficSystemRuntime.transitLines = [];
+    set((s) => ({
+      tiles,
+      gridVersion: s.gridVersion + 1,
+    }));
+    state.showToast(
+      target.busStop ? 'Ponto de ônibus ativado neste trecho.' : 'Ponto de ônibus removido.',
+      'info',
+    );
+  },
+
   setActiveTool: (tool, buildType = null) =>
     set({
       activeTool: tool,
       selectedBuildType: buildType,
       moveSourceTile: null,
+      manualBuildRotated: false,
     }),
 
-  rotateBuildPreview: () => set((s) => ({ buildRotation: (s.buildRotation + 1) % 4 })),
+  rotateBuildPreview: () =>
+    set((s) => ({
+      buildRotation: (s.buildRotation + 1) % 4,
+      manualBuildRotated: true,
+    })),
 
   setThematicMode: (thematicMode) => set({ thematicMode }),
 
@@ -1079,33 +1342,195 @@ export const useGameStore = create<GameState>((set, get) => ({
       cameraCommand: { ...cmd, nonce: Date.now() },
     })),
 
+  advanceToNextDay: () => {
+    const state = get();
+    if (state.endGameReport || state.activeEvent) return;
+    const hoursToAdvance = state.hourOfDay < 7 ? 7 - state.hourOfDay : 24 - state.hourOfDay + 7;
+    stepBuildingLifecycles(state.tiles, hoursToAdvance, state.timeConfig.creativeInstantBuild);
+    const nextDay = state.day + 1;
+    if (nextDay <= 30) {
+      set((s) => ({
+        day: nextDay,
+        hourOfDay: 7.0,
+        dayAccumulator: 0,
+        gridVersion: s.gridVersion + 1,
+      }));
+      return;
+    }
+    get().advanceToMonthEnd();
+  },
+
+  advanceToMonthEnd: () => {
+    const state = get();
+    if (state.endGameReport || state.activeEvent) return;
+    const remainingDays = Math.max(1, 31 - state.day);
+    stepBuildingLifecycles(
+      state.tiles,
+      remainingDays * 24,
+      state.timeConfig.creativeInstantBuild,
+    );
+    let month = state.month + 1;
+    let year = state.year;
+    if (month > 12) {
+      month = 1;
+      year += 1;
+    }
+    const hadDebtBefore = state.hadDebtBefore || state.economy.debt > 0;
+    const result = processMonthlyCycle({
+      tiles: state.tiles,
+      economy: state.economy,
+      indicators: state.indicators,
+      politics: state.politics,
+      citizens: state.citizens,
+      achievements: state.achievements,
+      developmentLevel: state.developmentLevel,
+      decisionLogs: state.decisionLogs,
+      day: 1,
+      month,
+      year,
+      cityName: state.cityName,
+      hadDebtBefore,
+    });
+    const updatedNews = [...result.newsToAdd, ...state.news].slice(0, 40);
+    set((s) => ({
+      day: 1,
+      month,
+      year,
+      dayAccumulator: 0,
+      hourOfDay: 8.0,
+      hadDebtBefore,
+      tiles: result.tiles,
+      economy: result.economy,
+      indicators: result.indicators,
+      politics: result.politics,
+      citizens: result.citizens,
+      news: updatedNews,
+      achievements: result.achievements,
+      developmentLevel: result.developmentLevel,
+      decisionLogs: result.decisionLogs,
+      activeEvent: result.triggeredEvent ?? s.activeEvent,
+      endGameReport: result.endGameReport ?? s.endGameReport,
+      gridVersion: s.gridVersion + 1,
+      thematicVersion: s.thematicVersion + 1,
+    }));
+    saveCityLocal(get().exportSnapshot());
+  },
+
   advanceSimulation: (dtSeconds) => {
     const state = get();
-    if (state.speed === 0 || state.endGameReport || state.activeEvent) return;
+    if (state.speed === 0 || state.endGameReport || state.activeEvent || dtSeconds <= 0) return;
 
-    const simDt = Math.min(0.25, dtSeconds) * state.speed;
-    // 2.2 seconds per simulated day at 1x speed
-    const secondsPerDay = 2.2;
-    let newAcc = state.dayAccumulator + simDt;
-    const hourStep = (simDt / secondsPerDay) * 24;
-    let newHour = (state.hourOfDay + hourStep) % 24;
+    const tStart = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    navCache.ensureFresh(state.tiles, state.gridVersion);
 
-    // Move citizens smoothly in real time
+    // Fixed-timestep simulation accumulation (20 Hz deterministic steps)
+    const clockStep = simClock.step(dtSeconds, state.speed, state.timeConfig);
+    if (clockStep.fixedSteps === 0) return;
+
+    const calendarHoursDelta = clockStep.calendarHoursDelta;
+    const physicalDt = clockStep.physicalDt;
+    const calendarSimSeconds = clockStep.fixedSteps * FIXED_SIM_DT * state.speed;
+
+    const dueChannels = simScheduler.advance(physicalDt);
+    const runNeedsAndStructure = dueChannels.has('needs');
+
+    const safeSecondsPerDay = clampNum(state.timeConfig.secondsPerDay || 180, 60, 300);
+    let newAcc = state.dayAccumulator + calendarSimSeconds;
+    const newHour = (state.hourOfDay + calendarHoursDelta) % 24;
+
+    // 1. Building construction lifecycle progression
+    const anyBuiltCompleted = stepBuildingLifecycles(
+      state.tiles,
+      calendarHoursDelta,
+      state.timeConfig.creativeInstantBuild,
+    );
+
+    // 2. Intelligent NPC ecosystem
     const nextCitizens = state.citizens;
-    stepCitizensMotion(nextCitizens, state.tiles, newHour, simDt);
+    const ecoStep = stepCitizenEcosystem({
+      tiles: state.tiles,
+      citizens: nextCitizens,
+      households: state.households,
+      workplaces: state.workplaces,
+      navCache,
+      hourOfDay: newHour,
+      day: state.day,
+      year: state.year,
+      physicalDt,
+      calendarHoursDelta,
+      timeConfig: state.timeConfig,
+      indicators: state.indicators,
+      economy: state.economy,
+      batchCursor: citizenBatchCursor,
+      runNeedsAndStructure,
+    });
+    citizenBatchCursor = ecoStep.nextBatchCursor;
 
-    if (newAcc < secondsPerDay) {
-      set({ dayAccumulator: newAcc, hourOfDay: newHour });
+    // 3. Purposeful road traffic, signals, transit buses & emergency dispatches
+    stepTrafficEngine(
+      trafficSystemRuntime,
+      state.tiles,
+      nextCitizens,
+      navCache,
+      physicalDt,
+      state.timeConfig,
+    );
+
+    const tEnd = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const simStepMs = Number((tEnd - tStart).toFixed(2));
+    const simStats: CitySimulationStats = dueChannels.has('stats')
+      ? {
+          fps: state.simStats.fps,
+          simStepMs,
+          activeNpcs: nextCitizens.length,
+          insideBuildingNpcs: nextCitizens.filter((c) => Boolean(c.insideBuildingId)).length,
+          blockedNpcs: nextCitizens.filter((c) => c.behaviorState === 'WaitingForPath').length,
+          activeVehicles: trafficSystemRuntime.vehicles.length,
+          busPassengers: trafficSystemRuntime.vehicles.reduce(
+            (acc, v) => acc + (v.passengerIds?.length ?? 0),
+            0,
+          ),
+          pedestrianNodes: navCache.pedestrianGraph.nodes.size,
+          roadNodes: navCache.roadGraph.nodes.size,
+          cachedRoutes: navCache.cacheCount,
+        }
+      : state.simStats;
+
+    if (newAcc < safeSecondsPerDay) {
+      set((s) => ({
+        dayAccumulator: newAcc,
+        hourOfDay: newHour,
+        households: ecoStep.households,
+        workplaces: ecoStep.workplaces,
+        trafficSignals: trafficSystemRuntime.signals,
+        transitLines: trafficSystemRuntime.transitLines,
+        vehicles: trafficSystemRuntime.vehicles,
+        dispatches: trafficSystemRuntime.dispatches,
+        simStats,
+        gridVersion: anyBuiltCompleted ? s.gridVersion + 1 : s.gridVersion,
+      }));
       return;
     }
 
-    newAcc -= secondsPerDay;
+    newAcc -= safeSecondsPerDay;
     let day = state.day + 1;
     let month = state.month;
     let year = state.year;
 
     if (day <= 30) {
-      set({ day, dayAccumulator: newAcc, hourOfDay: newHour });
+      set((s) => ({
+        day,
+        dayAccumulator: newAcc,
+        hourOfDay: newHour,
+        households: ecoStep.households,
+        workplaces: ecoStep.workplaces,
+        trafficSignals: trafficSystemRuntime.signals,
+        transitLines: trafficSystemRuntime.transitLines,
+        vehicles: trafficSystemRuntime.vehicles,
+        dispatches: trafficSystemRuntime.dispatches,
+        simStats,
+        gridVersion: anyBuiltCompleted ? s.gridVersion + 1 : s.gridVersion,
+      }));
       return;
     }
 
@@ -1134,6 +1559,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       hadDebtBefore,
     });
 
+    const reconciledHouseholds = reconcileHouseholds(result.tiles, result.citizens, ecoStep.households);
+    const reconciledWorkplaces = reconcileWorkplaces(result.tiles, result.citizens);
     const updatedNews = [...result.newsToAdd, ...state.news].slice(0, 40);
 
     set((s) => ({
@@ -1148,6 +1575,13 @@ export const useGameStore = create<GameState>((set, get) => ({
       indicators: result.indicators,
       politics: result.politics,
       citizens: result.citizens,
+      households: reconciledHouseholds,
+      workplaces: reconciledWorkplaces,
+      trafficSignals: trafficSystemRuntime.signals,
+      transitLines: trafficSystemRuntime.transitLines,
+      vehicles: trafficSystemRuntime.vehicles,
+      dispatches: trafficSystemRuntime.dispatches,
+      simStats,
       news: updatedNews,
       achievements: result.achievements,
       developmentLevel: result.developmentLevel,
@@ -1329,19 +1763,32 @@ export const useGameStore = create<GameState>((set, get) => ({
       target.ownerType = isPublic ? 'public' : 'private';
       target.ownerName = isPublic ? 'Prefeitura Municipal' : 'Empreendimento Privado';
       target.concessionActive = false;
-      target.building = {
-        id: `b_${def.id}_${x}_${z}_${Date.now().toString(36)}`,
-        type: def.id,
-        level: 1,
-        rotation: state.buildRotation,
-        ownerType: isPublic ? 'public' : 'private',
-        ownerName: target.ownerName,
-        powered: target.hasPower,
-        watered: target.hasWater,
-        connectedRoad: true,
-        builtAtDay: (state.year - 1) * 360 + (state.month - 1) * 30 + state.day,
-        condition: 100,
-      };
+      const autoRotation = state.manualBuildRotated
+        ? state.buildRotation
+        : computeFacingRoadRotation(tiles, x, z, state.buildRotation);
+      const placed = initializeBuildingLifecycle(
+        {
+          id: `b_${def.id}_${x}_${z}_${Date.now().toString(36)}`,
+          type: def.id,
+          level: 1,
+          rotation: autoRotation,
+          ownerType: isPublic ? 'public' : 'private',
+          ownerName: target.ownerName,
+          powered: target.hasPower,
+          watered: target.hasWater,
+          connectedRoad: true,
+          builtAtDay: (state.year - 1) * 360 + (state.month - 1) * 30 + state.day,
+          condition: 100,
+          occupantIds: [],
+          variantSeed: x * 41 + z * 83 + state.day,
+        },
+        state.timeConfig.creativeInstantBuild,
+      );
+      target.building = placed;
+      const access = computeBuildingAccess(tiles, target);
+      target.building.entranceTile = access.adjacentRoadTile ?? { x, z };
+      target.zone = inferBuildingZone(target);
+      target.building.zone = target.zone;
 
       const economy = {
         ...state.economy,
@@ -1349,6 +1796,9 @@ export const useGameStore = create<GameState>((set, get) => ({
       };
 
       const grid = recomputeCityGridMetrics(tiles, economy, state.politics);
+      const updatedCitizens = state.citizens.map((c) => ({ ...c }));
+      const households = reconcileHouseholds(tiles, updatedCitizens, state.households);
+      const workplaces = reconcileWorkplaces(tiles, updatedCitizens);
       const indicators = {
         ...state.indicators,
         housingCapacity: grid.housingCapacity,
@@ -1361,6 +1811,9 @@ export const useGameStore = create<GameState>((set, get) => ({
 
       set((s) => ({
         tiles,
+        citizens: updatedCitizens,
+        households,
+        workplaces,
         economy,
         indicators,
         selectedTileCoords: { x, z },
@@ -1445,12 +1898,27 @@ export const useGameStore = create<GameState>((set, get) => ({
       building: t.building ? { ...t.building } : null,
     }));
     const target = tiles[z * GRID_SIZE + x];
+    const demolishedBuildingId = target.building?.id ?? null;
     target.building = null;
     target.road = 'none';
+    target.busStop = false;
+    target.zone = 'none';
     const economy = { ...state.economy, treasury: state.economy.treasury + refund };
     recomputeCityGridMetrics(tiles, economy, state.politics);
+    const updatedCitizens = state.citizens.map((c) => {
+      if (demolishedBuildingId && c.insideBuildingId === demolishedBuildingId) {
+        return { ...c, insideBuildingId: null, path: [], pathIndex: 0 };
+      }
+      return { ...c };
+    });
+    const households = reconcileHouseholds(tiles, updatedCitizens, state.households);
+    const workplaces = reconcileWorkplaces(tiles, updatedCitizens);
+    trafficSystemRuntime.transitLines = [];
     set((s) => ({
       tiles,
+      citizens: updatedCitizens,
+      households,
+      workplaces,
       economy,
       gridVersion: s.gridVersion + 1,
       thematicVersion: s.thematicVersion + 1,
@@ -1987,6 +2455,7 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   startNewCity: (cityName = 'Nova Aurora', mayorName = 'Prefeito(a) Silva') => {
     clearCityLocal();
+    simClock.reset();
     const fresh = buildFreshCityState(cityName, mayorName);
     set((s) => ({
       ...fresh,
@@ -2004,7 +2473,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   exportSnapshot: () => {
     const s = get();
     return {
-      version: 2,
+      version: 3,
       cityName: s.cityName,
       day: s.day,
       month: s.month,
@@ -2012,6 +2481,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       hourOfDay: s.hourOfDay,
       dayAccumulator: s.dayAccumulator,
       speed: s.speed,
+      timeConfig: s.timeConfig,
       developmentLevel: s.developmentLevel,
       hadDebtBefore: s.hadDebtBefore,
       tiles: s.tiles,
@@ -2034,6 +2504,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       get().showToast('Salvamento inválido ou corrompido. Restauração cancelada.', 'error');
       return false;
     }
+    simClock.reset();
     set((s) => ({
       ...hydrated,
       selectedTileCoords: null,

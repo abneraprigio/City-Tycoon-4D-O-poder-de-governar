@@ -16,6 +16,8 @@ import {
   TileData,
 } from '../types/game';
 import { createCitizenAgent } from './cityGenerator';
+import { computeBuildingAccess, computeFacingRoadRotation } from './navigation/obstacleSystem';
+import { inferBuildingZone } from './urban/zoningEngine';
 
 export function getTile(tiles: TileData[], x: number, z: number): TileData | null {
   if (x < 0 || z < 0 || x >= GRID_SIZE || z >= GRID_SIZE) return null;
@@ -274,9 +276,12 @@ export function stepCitizensMotion(
     const dist = Math.hypot(dx, dz);
 
     if (dist > 0.12) {
-      const step = Math.min(dist, c.speed * dt);
+      const naturalSpeed = Math.min(0.24, Math.max(0.14, c.speed * 0.165));
+      const step = Math.min(dist, naturalSpeed * dt);
       c.x += (dx / dist) * step;
       c.z += (dz / dist) * step;
+      c.yaw = Math.atan2(dx, dz);
+      c.currentSpeed = naturalSpeed;
     } else {
       // Pick next destination based on state machine & time of day
       let destX = c.x;
@@ -568,11 +573,12 @@ export function processMonthlyCycle(params: {
       tile.ownerType = 'private';
       tile.concessionActive = false;
       tile.ownerName = 'Incorporadora Horizonte';
+      const facingRot = computeFacingRoadRotation(tiles, tile.x, tile.z, 0);
       tile.building = {
         id: `b_priv_${tile.x}_${tile.z}_${Date.now().toString(36)}`,
         type: chosen,
         level: 1,
-        rotation: Math.floor(Math.random() * 4),
+        rotation: facingRot,
         ownerType: 'private',
         ownerName: 'Incorporadora Horizonte',
         powered: tile.hasPower,
@@ -580,7 +586,15 @@ export function processMonthlyCycle(params: {
         connectedRoad: true,
         builtAtDay: params.day,
         condition: 100,
+        constructionStage: 'construction_site',
+        constructionProgress: 18,
+        occupantIds: [],
+        variantSeed: tile.x * 41 + tile.z * 83 + params.day,
       };
+      const access = computeBuildingAccess(tiles, tile);
+      tile.building.entranceTile = access.adjacentRoadTile ?? { x: tile.x, z: tile.z };
+      tile.zone = inferBuildingZone(tile);
+      tile.building.zone = tile.zone;
     }
   }
 
@@ -616,14 +630,16 @@ export function processMonthlyCycle(params: {
       const h = homes[Math.floor(Math.random() * homes.length)];
       const canHaveJob = grid.jobsTotal > 0 && workplaces.length > 0 && k < grid.jobsTotal;
       const w = canHaveJob ? workplaces[Math.floor(Math.random() * workplaces.length)] : null;
+      const access = computeBuildingAccess(tiles, h);
       citizens.push(
         createCitizenAgent(
           citizens.length + k + params.year * 100 + params.month * 10,
           `${h.x},${h.z}`,
           w?.building?.id || null,
           w ? BUILDING_CATALOG[w.building!.type].name : null,
-          h.x,
-          h.z,
+          access.sidewalkPoint.x,
+          access.sidewalkPoint.z,
+          h.building?.id || null,
         ),
       );
     }

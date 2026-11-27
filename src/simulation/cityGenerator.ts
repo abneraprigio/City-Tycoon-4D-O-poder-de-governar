@@ -13,6 +13,9 @@ import {
   TerrainType,
   TileData,
 } from '../types/game';
+import { computeBuildingAccess, computeFacingRoadRotation } from './navigation/obstacleSystem';
+import { assignPersonality, assignScheduleProfile } from './agents/citizenSchedule';
+import { inferBuildingZone } from './urban/zoningEngine';
 
 const FIRST_NAMES = [
   'Lucas', 'Mariana', 'Gabriel', 'Camila', 'Rafael', 'Juliana', 'Mateus', 'Larissa',
@@ -50,6 +53,7 @@ export function createCitizenAgent(
   workBuildingName: string | null,
   startX: number,
   startZ: number,
+  residenceBuildingId: string | null = null,
 ): CitizenAgent {
   const roll = (index * 17) % 10;
   const education: 'Básico' | 'Médio' | 'Superior' =
@@ -57,38 +61,68 @@ export function createCitizenAgent(
   const profList = PROFESSIONS[education];
   const profession = profList[index % profList.length];
   const baseIncome = education === 'Básico' ? 1850 : education === 'Médio' ? 3400 : 7200;
+  const age = index % 11 === 0 ? 12 + (index % 5) : index % 14 === 0 ? 66 + (index % 10) : 19 + ((index * 11) % 44);
+  const effectiveWorkId = age >= 18 && age < 64 ? workBuildingId : null;
+  const effectiveWorkName = effectiveWorkId ? workBuildingName : null;
 
-  return {
+  const baseAgent: CitizenAgent = {
     id: `cit_${index}_${Date.now().toString(36)}`,
     name: randomName(index),
-    age: 19 + ((index * 11) % 44),
-    profession,
+    age,
+    profession: age <= 17 ? 'Estudante' : age >= 64 ? 'Aposentado(a)' : profession,
     education,
-    income: workBuildingId ? baseIncome + ((index * 137) % 900) : 0,
-    employedAtId: workBuildingId,
-    employedAtName: workBuildingName,
+    income: effectiveWorkId ? baseIncome + ((index * 137) % 900) : age >= 64 ? 1900 : 0,
+    employedAtId: effectiveWorkId,
+    employedAtName: effectiveWorkName,
     homeTileKey,
+    residenceBuildingId,
     health: 78 + (index % 18),
     happiness: 68 + (index % 18),
     needs: {
       housing: homeTileKey ? 82 : 25,
-      job: workBuildingId ? 85 : 20,
+      job: effectiveWorkId ? 85 : age >= 18 && age < 64 ? 20 : 80,
       health: 75,
       education: 65,
       safety: 72,
+      energy: 78 + (index % 15),
+      hunger: 72 + (index % 16),
+      leisure: 66 + (index % 14),
+      transport: 74,
     },
-    state: workBuildingId ? 'commuting' : 'seeking_job',
+    state: effectiveWorkId ? 'commuting' : age <= 17 ? 'studying' : 'idle',
     opinion: 70,
-    thought: workBuildingId
+    thought: effectiveWorkId
       ? 'A cidade tem potencial para crescer com planejamento.'
-      : 'Preciso encontrar um emprego.',
+      : age <= 17
+      ? 'Seguindo minha rotina de estudos.'
+      : 'Aproveitando o dia pelo bairro.',
     x: startX,
     z: startZ,
     targetX: startX,
     targetZ: startZ,
     speed: 0.9 + ((index % 5) * 0.14),
     shirtColor: SHIRT_COLORS[index % SHIRT_COLORS.length],
+    birthDay: ((index * 7) % 30) + 1,
+    birthYear: Math.max(1, 1 - age),
+    balance: 450 + ((index * 211) % 1800),
+    monthlyExpenses: 850 + ((index * 97) % 900),
+    jobSatisfaction: effectiveWorkId ? 74 : 45,
+    personality: assignPersonality(index),
+    staggerMinutes: ((index * 13) % 50) - 25,
+    behaviorState: 'WalkingToDestination',
+    movementState: 'stopped',
+    animState: 'Idle',
+    transportMode: 'walk',
+    insideBuildingId: null,
+    targetBuildingId: null,
+    yaw: (index % 4) * (Math.PI / 2),
+    currentSpeed: 0,
+    decisionCooldown: (index % 5) * 0.12,
+    history: ['Morador(a) fundador(a) de Nova Aurora.'],
   };
+
+  baseAgent.scheduleProfile = assignScheduleProfile(baseAgent, index);
+  return baseAgent;
 }
 
 export function createInitialTiles(): TileData[] {
@@ -137,7 +171,7 @@ export function createInitialTiles(): TileData[] {
 
   const setTile = (x: number, z: number) => tiles[z * GRID_SIZE + x];
 
-  // Starter roads & avenues cross
+  // Starter roads & avenues cross with continuous neighborhood loops
   for (let i = 8; i <= 15; i++) {
     setTile(i, 11).road = 'avenida';
     setTile(11, i).road = 'avenida';
@@ -147,8 +181,15 @@ export function createInitialTiles(): TileData[] {
     setTile(i, 13).road = 'rua';
   }
   setTile(9, 10).road = 'rua';
+  setTile(9, 12).road = 'rua';
   setTile(14, 10).road = 'rua';
   setTile(14, 12).road = 'rua';
+
+  // Strategic starter bus stops along main avenues
+  setTile(9, 11).busStop = true;
+  setTile(13, 11).busStop = true;
+  setTile(11, 9).busStop = true;
+  setTile(11, 13).busStop = true;
 
   const placeStarter = (
     x: number,
@@ -161,11 +202,12 @@ export function createInitialTiles(): TileData[] {
     const t = setTile(x, z);
     t.ownerType = ownerType;
     t.ownerName = ownerName;
+    const facingRot = computeFacingRoadRotation(tiles, x, z, 0);
     t.building = {
       id: `b_${type}_${idSuffix}`,
       type,
       level: 1,
-      rotation: 0,
+      rotation: facingRot,
       ownerType,
       ownerName,
       powered: true,
@@ -173,7 +215,15 @@ export function createInitialTiles(): TileData[] {
       connectedRoad: true,
       builtAtDay: 1,
       condition: 100,
+      constructionStage: 'operational',
+      constructionProgress: 100,
+      occupantIds: [],
+      variantSeed: x * 41 + z * 83,
     };
+    const access = computeBuildingAccess(tiles, t);
+    t.building.entranceTile = access.adjacentRoadTile ?? { x, z };
+    t.zone = inferBuildingZone(t);
+    t.building.zone = t.zone;
   };
 
   // Starter City Hall & Essential Infrastructure
@@ -190,7 +240,7 @@ export function createInitialTiles(): TileData[] {
   placeStarter(12, 14, 'casa_popular', 'private', 'Família Costa', 'init_h5');
   placeStarter(13, 10, 'casa_media', 'private', 'Família Oliveira', 'init_h6');
 
-  // Starter Commerce & Light Industry
+  // Starter Commerce & Light Industry (oriented toward street, industry at sector edge)
   placeStarter(12, 10, 'padaria', 'private', 'Panificadora Aurora', 'init_c1');
   placeStarter(14, 14, 'fabrica_pequena', 'private', 'Metalúrgica Vale Verde', 'init_i1');
 
@@ -207,14 +257,17 @@ export function createInitialCitizens(tiles: TileData[]): CitizenAgent[] {
     const homeKey = `${home.x},${home.z}`;
     const hasJob = i < 30 && workplaces.length > 0;
     const work = hasJob ? workplaces[i % workplaces.length] : null;
+    const access = computeBuildingAccess(tiles, home);
+    const jitter = ((i % 5) - 2) * 0.06;
     agents.push(
       createCitizenAgent(
         i,
         homeKey,
         work?.building?.id || null,
         work ? BUILDING_CATALOG[work.building!.type].name : null,
-        home.x + (Math.random() - 0.5) * 0.4,
-        home.z + (Math.random() - 0.5) * 0.4,
+        access.sidewalkPoint.x + jitter,
+        access.sidewalkPoint.z - jitter,
+        home.building?.id || null,
       ),
     );
   }

@@ -6,6 +6,29 @@ import { RightInspector } from './components/RightInspector';
 import { BottomBuildDock } from './components/BottomBuildDock';
 import { BottomTicker } from './components/BottomTicker';
 import { GameModals } from './components/Modals';
+import { useGameStore } from './store/useGameStore';
+
+function DiagnosticsHud() {
+  const debugOverlay = useGameStore((s) => s.timeConfig.debugOverlay);
+  const zenMode = useGameStore((s) => s.zenMode);
+  const simStats = useGameStore((s) => s.simStats);
+  if (!debugOverlay || zenMode) return null;
+
+  return (
+    <div className="fixed top-12 left-1/2 -translate-x-1/2 z-20 pointer-events-none bg-slate-950/92 border border-emerald-700/70 rounded px-3 py-1.5 text-[11px] font-mono-num text-slate-200 flex flex-wrap items-center gap-3 shadow-lg">
+      <span className="text-emerald-400 font-semibold">DIAGNÓSTICO</span>
+      <span>FPS: {simStats.fps}</span>
+      <span>Sim: {simStats.simStepMs.toFixed(2)}ms</span>
+      <span>
+        NPCs: {simStats.activeNpcs} rua / {simStats.insideBuildingNpcs} edif. / {simStats.blockedNpcs} rota
+      </span>
+      <span>Veículos: {simStats.activeVehicles} (Bus pax: {simStats.busPassengers})</span>
+      <span>
+        Grafos: {simStats.pedestrianNodes} calç. / {simStats.roadNodes} viário / {simStats.cachedRoutes} cache
+      </span>
+    </div>
+  );
+}
 
 export default function App() {
   return (
@@ -18,6 +41,7 @@ export default function App() {
 
         {/* Strategy HUD Layers */}
         <TopBar />
+        <DiagnosticsHud />
         <LeftDock />
         <RightInspector />
         <BottomBuildDock />

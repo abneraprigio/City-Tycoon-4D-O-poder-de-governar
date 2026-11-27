@@ -1,6 +1,14 @@
 import * as THREE from 'three';
-import { BUILDING_CATALOG, CitizenAgent, GRID_SIZE, TILE_WORLD_SIZE, TileData } from '../types/game';
+import {
+  CitizenAgent,
+  CitizenAnimState,
+  GRID_SIZE,
+  RoadVehicleSim,
+  TileData,
+  TrafficSignalNode,
+} from '../types/game';
 import { getTilePadElevation, tileToWorld, worldToTile } from './terrainAndRoads';
+import { getSignalAspectForDirection } from '../simulation/traffic/trafficSignals';
 
 export type VehicleKind =
   | 'hatch'
@@ -10,35 +18,22 @@ export type VehicleKind =
   | 'bus'
   | 'truck'
   | 'ambulance'
+  | 'fire'
   | 'police';
 
 export interface VehicleEntity {
   id: string;
   kind: VehicleKind;
-  x: number;
-  z: number;
-  dirX: number;
-  dirZ: number;
+  x: number; // world X
+  z: number; // world Z
   rotY: number;
-  baseSpeed: number;
   currentSpeed: number;
   braking: boolean;
   color: number;
-  lastDecisionTileKey: string;
 }
 
 const _dummy = new THREE.Object3D();
 const _color = new THREE.Color();
-
-const BODY_PALETTE = [
-  0xd64545, // Red
-  0x2b6cb0, // Metallic blue
-  0xd97706, // Amber
-  0xe2e8f0, // Silver-white
-  0x334155, // Graphite
-  0x2f855a, // Forest green
-  0x94a3b8, // Metallic grey
-];
 
 const SKIN_TONES = [0xf2c9ac, 0xdca57d, 0xb87b52, 0x7c4d30, 0xe8b996];
 const PANTS_TONES = [0x1e293b, 0x334155, 0x3f3f46, 0x1e3a5f, 0x4b5563];
@@ -142,6 +137,18 @@ const VEHICLE_SPECS: Record<VehicleKind, VehicleDimensions> = {
     wheelW: 0.045,
     axleSpread: 0.21,
   },
+  fire: {
+    bodyW: 0.34,
+    bodyH: 0.24,
+    bodyL: 0.86,
+    cabW: 0.31,
+    cabH: 0.14,
+    cabL: 0.28,
+    cabZOffset: 0.24,
+    wheelR: 0.07,
+    wheelW: 0.05,
+    axleSpread: 0.26,
+  },
   police: {
     bodyW: 0.29,
     bodyH: 0.11,
@@ -166,6 +173,9 @@ export interface TrafficAndCitizenSystem {
     nightGlow: number,
     tiles: TileData[],
     citizens: CitizenAgent[],
+    simVehicles: RoadVehicleSim[],
+    signals: TrafficSignalNode[],
+    pedestrianDensity: number,
     cameraTarget: THREE.Vector3,
     detailDistance: number,
   ) => void;
@@ -176,6 +186,10 @@ export interface TrafficAndCitizenSystem {
 
 interface HumanoidRig {
   group: THREE.Group;
+  mixer: THREE.AnimationMixer;
+  actions: Record<CitizenAnimState, THREE.AnimationAction>;
+  activeState: CitizenAnimState;
+  citizenId: string;
   leftLegPivot: THREE.Group;
   rightLegPivot: THREE.Group;
   leftArmPivot: THREE.Group;
@@ -198,15 +212,90 @@ function hashStr(s: string): number {
   return h >>> 0;
 }
 
+function buildHumanoidAnimationClips(): Record<CitizenAnimState, THREE.AnimationClip> {
+  const times3 = [0, 0.25, 0.5, 0.75, 1.0];
+  const makeCycle = (
+    name: string,
+    legAmp: number,
+    armAmp: number,
+    bobAmp: number,
+    armBias = 0,
+  ) => {
+    const lLeg = new THREE.NumberKeyframeTrack('leftLeg.rotation[x]', times3, [
+      0,
+      legAmp,
+      0,
+      -legAmp,
+      0,
+    ]);
+    const rLeg = new THREE.NumberKeyframeTrack('rightLeg.rotation[x]', times3, [
+      0,
+      -legAmp,
+      0,
+      legAmp,
+      0,
+    ]);
+    const lArm = new THREE.NumberKeyframeTrack('leftArm.rotation[x]', times3, [
+      armBias,
+      armBias - armAmp,
+      armBias,
+      armBias + armAmp,
+      armBias,
+    ]);
+    const rArm = new THREE.NumberKeyframeTrack('rightArm.rotation[x]', times3, [
+      armBias,
+      armBias + armAmp,
+      armBias,
+      armBias - armAmp,
+      armBias,
+    ]);
+    const bodyBob = new THREE.NumberKeyframeTrack('bodyRoot.position[y]', times3, [
+      0,
+      bobAmp,
+      0,
+      bobAmp,
+      0,
+    ]);
+    return new THREE.AnimationClip(name, 1.0, [lLeg, rLeg, lArm, rArm, bodyBob]);
+  };
+
+  return {
+    Idle: makeCycle('Idle', 0.02, 0.04, 0.004, 0),
+    Wait: makeCycle('Wait', 0.0, 0.05, 0.003, -0.15),
+    Sit: makeCycle('Sit', 0.0, 0.04, 0.0, -0.3),
+    WalkSlow: makeCycle('WalkSlow', 0.4, 0.32, 0.012, 0),
+    Walk: makeCycle('Walk', 0.58, 0.48, 0.018, 0),
+    WalkFast: makeCycle('WalkFast', 0.74, 0.65, 0.024, 0),
+    Run: makeCycle('Run', 0.92, 0.85, 0.035, -0.2),
+    Talk: makeCycle('Talk', 0.03, 0.28, 0.006, -0.45),
+    Shop: makeCycle('Shop', 0.04, 0.2, 0.006, -0.3),
+    Work: makeCycle('Work', 0.04, 0.35, 0.008, -0.55),
+  };
+}
+
+function mapRoleToVehicleKind(sim: RoadVehicleSim, seed: number): VehicleKind {
+  if (sim.role === 'bus') return 'bus';
+  if (sim.role === 'cargo') return 'truck';
+  if (sim.role === 'ambulance') return 'ambulance';
+  if (sim.role === 'fire') return 'fire';
+  if (sim.role === 'police') return 'police';
+  const r = seed % 5;
+  if (r === 0) return 'suv';
+  if (r === 1) return 'hatch';
+  if (r === 2) return 'moto';
+  return 'sedan';
+}
+
 export function createTrafficAndCitizenSystem(
   scene: THREE.Scene,
   isSoftwareGl: boolean,
 ): TrafficAndCitizenSystem {
   const maxVehicles = 52;
+  const maxSignals = 48;
   const maxDetailedCitizens = isSoftwareGl ? 24 : 44;
   const maxFarCitizens = 120;
 
-  // --- 1. Multi-Part Instanced Vehicles ---
+  // --- 1. Multi-Part Instanced Vehicles + Traffic Signals ---
   const unitBox = new THREE.BoxGeometry(1, 1, 1);
   const wheelGeo = new THREE.CylinderGeometry(1, 1, 1, 10);
   wheelGeo.rotateZ(Math.PI / 2);
@@ -245,6 +334,17 @@ export function createTrafficAndCitizenSystem(
     emissive: new THREE.Color(0xef4444),
     emissiveIntensity: 0.65,
   });
+  const signalPoleMat = new THREE.MeshStandardMaterial({
+    color: 0x1e293b,
+    roughness: 0.55,
+    metalness: 0.4,
+  });
+  const signalLensMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    emissive: new THREE.Color(0x22c55e),
+    emissiveIntensity: 1.4,
+    roughness: 0.2,
+  });
 
   const bodyInst = new THREE.InstancedMesh(unitBox, carPaintMat, maxVehicles);
   const cabInst = new THREE.InstancedMesh(unitBox, cabinGlassMat, maxVehicles);
@@ -252,19 +352,32 @@ export function createTrafficAndCitizenSystem(
   const headLightInst = new THREE.InstancedMesh(unitBox, headlightMat, maxVehicles * 2);
   const tailLightInst = new THREE.InstancedMesh(unitBox, taillightMat, maxVehicles * 2);
   const beaconInst = new THREE.InstancedMesh(unitBox, beaconMat, maxVehicles);
+  const signalPoleInst = new THREE.InstancedMesh(unitBox, signalPoleMat, maxSignals * 2);
+  const signalLensInst = new THREE.InstancedMesh(unitBox, signalLensMat, maxSignals * 2);
 
   bodyInst.castShadow = !isSoftwareGl;
   bodyInst.receiveShadow = true;
-  [bodyInst, cabInst, wheelInst, headLightInst, tailLightInst, beaconInst].forEach((inst) => {
+  [
+    bodyInst,
+    cabInst,
+    wheelInst,
+    headLightInst,
+    tailLightInst,
+    beaconInst,
+    signalPoleInst,
+    signalLensInst,
+  ].forEach((inst) => {
     inst.frustumCulled = false;
     scene.add(inst);
   });
 
   const vehicles: VehicleEntity[] = [];
+  const vehicleWheelPhase = new Map<string, number>();
 
-  // --- 2. Articulated Pooled 3D Humanoids (Near LOD) + Instanced Multi-Part Far LOD ---
+  // --- 2. Articulated Pooled 3D Humanoids with AnimationMixer ---
+  const clips = buildHumanoidAnimationClips();
   const limbGeo = new THREE.BoxGeometry(0.055, 0.17, 0.055);
-  limbGeo.translate(0, -0.085, 0); // Pivot at shoulder / hip
+  limbGeo.translate(0, -0.085, 0);
   const torsoGeo = new THREE.BoxGeometry(0.14, 0.19, 0.085);
   const headGeo = new THREE.SphereGeometry(0.055, 8, 7);
   const hairGeo = new THREE.SphereGeometry(0.058, 8, 6, 0, Math.PI * 2, 0, Math.PI * 0.58);
@@ -277,6 +390,10 @@ export function createTrafficAndCitizenSystem(
     const group = new THREE.Group();
     group.visible = false;
 
+    const bodyRoot = new THREE.Group();
+    bodyRoot.name = 'bodyRoot';
+    group.add(bodyRoot);
+
     const torsoMat = new THREE.MeshStandardMaterial({ color: 0x3b82f6, roughness: 0.72 });
     const pantsMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.8 });
     const skinMat = new THREE.MeshStandardMaterial({ color: 0xdca57d, roughness: 0.68 });
@@ -285,46 +402,63 @@ export function createTrafficAndCitizenSystem(
     const torsoMesh = new THREE.Mesh(torsoGeo, torsoMat);
     torsoMesh.position.y = 0.27;
     torsoMesh.castShadow = !isSoftwareGl;
-    group.add(torsoMesh);
+    bodyRoot.add(torsoMesh);
 
     const headMesh = new THREE.Mesh(headGeo, skinMat);
     headMesh.position.y = 0.42;
     headMesh.castShadow = !isSoftwareGl;
-    group.add(headMesh);
+    bodyRoot.add(headMesh);
 
     const hairMesh = new THREE.Mesh(hairGeo, hairMat);
     hairMesh.position.y = 0.425;
-    group.add(hairMesh);
+    bodyRoot.add(hairMesh);
 
     const leftLegPivot = new THREE.Group();
+    leftLegPivot.name = 'leftLeg';
     leftLegPivot.position.set(-0.036, 0.175, 0);
     const leftLegMesh = new THREE.Mesh(limbGeo, pantsMat);
     leftLegPivot.add(leftLegMesh);
-    group.add(leftLegPivot);
+    bodyRoot.add(leftLegPivot);
 
     const rightLegPivot = new THREE.Group();
+    rightLegPivot.name = 'rightLeg';
     rightLegPivot.position.set(0.036, 0.175, 0);
     const rightLegMesh = new THREE.Mesh(limbGeo, pantsMat);
     rightLegPivot.add(rightLegMesh);
-    group.add(rightLegPivot);
+    bodyRoot.add(rightLegPivot);
 
     const leftArmPivot = new THREE.Group();
+    leftArmPivot.name = 'leftArm';
     leftArmPivot.position.set(-0.095, 0.35, 0);
     const leftArmMesh = new THREE.Mesh(limbGeo, torsoMat);
     leftArmMesh.scale.set(0.8, 0.9, 0.8);
     leftArmPivot.add(leftArmMesh);
-    group.add(leftArmPivot);
+    bodyRoot.add(leftArmPivot);
 
     const rightArmPivot = new THREE.Group();
+    rightArmPivot.name = 'rightArm';
     rightArmPivot.position.set(0.095, 0.35, 0);
     const rightArmMesh = new THREE.Mesh(limbGeo, torsoMat);
     rightArmMesh.scale.set(0.8, 0.9, 0.8);
     rightArmPivot.add(rightArmMesh);
-    group.add(rightArmPivot);
+    bodyRoot.add(rightArmPivot);
+
+    const mixer = new THREE.AnimationMixer(group);
+    const actions = {} as Record<CitizenAnimState, THREE.AnimationAction>;
+    (Object.keys(clips) as CitizenAnimState[]).forEach((stateKey) => {
+      const action = mixer.clipAction(clips[stateKey]);
+      action.setLoop(THREE.LoopRepeat, Infinity);
+      actions[stateKey] = action;
+    });
+    actions.Idle.play();
 
     detailedGroup.add(group);
     humanPool.push({
       group,
+      mixer,
+      actions,
+      activeState: 'Idle',
+      citizenId: '',
       leftLegPivot,
       rightLegPivot,
       leftArmPivot,
@@ -339,7 +473,7 @@ export function createTrafficAndCitizenSystem(
     });
   }
 
-  // Far LOD instanced multi-part humanoids (legs + torso + head)
+  // Far LOD instanced multi-part humanoids
   const farLegsGeo = new THREE.BoxGeometry(0.11, 0.17, 0.06);
   const farTorsoMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.7 });
   const farLegsMat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.82 });
@@ -353,75 +487,8 @@ export function createTrafficAndCitizenSystem(
     scene.add(inst);
   });
 
-  const syncRoads = (tiles: TileData[]) => {
-    const roadTiles = tiles.filter((t) => t.road !== 'none');
-    vehicles.length = 0;
-    if (roadTiles.length === 0) {
-      bodyInst.count = 0;
-      cabInst.count = 0;
-      wheelInst.count = 0;
-      headLightInst.count = 0;
-      tailLightInst.count = 0;
-      beaconInst.count = 0;
-      return;
-    }
-
-    const hasDelegacia = tiles.some((t) => t.building?.type === 'delegacia');
-    const hasHospital = tiles.some((t) => t.building?.type === 'hospital' || t.building?.type === 'posto_saude');
-    const hasIndustry = tiles.some(
-      (t) => t.building && BUILDING_CATALOG[t.building.type].category === 'industrial',
-    );
-
-    const desired = Math.min(maxVehicles, Math.max(6, Math.floor(roadTiles.length * 0.75)));
-    for (let i = 0; i < desired; i++) {
-      const rt = roadTiles[(i * 7) % roadTiles.length];
-      const [wx, wz] = tileToWorld(rt.x, rt.z);
-
-      // Pick connected road direction
-      const dirs: [number, number][] = [];
-      if (rt.z > 0 && tiles[(rt.z - 1) * GRID_SIZE + rt.x].road !== 'none') dirs.push([0, -1]);
-      if (rt.z < GRID_SIZE - 1 && tiles[(rt.z + 1) * GRID_SIZE + rt.x].road !== 'none') dirs.push([0, 1]);
-      if (rt.x > 0 && tiles[rt.z * GRID_SIZE + (rt.x - 1)].road !== 'none') dirs.push([-1, 0]);
-      if (rt.x < GRID_SIZE - 1 && tiles[rt.z * GRID_SIZE + (rt.x + 1)].road !== 'none') dirs.push([1, 0]);
-      const chosen = dirs.length > 0 ? dirs[i % dirs.length] : [1, 0];
-
-      let kind: VehicleKind = 'sedan';
-      let color = BODY_PALETTE[i % BODY_PALETTE.length];
-      if (i % 13 === 0 && hasDelegacia) {
-        kind = 'police';
-        color = 0x1e293b;
-      } else if (i % 15 === 0 && hasHospital) {
-        kind = 'ambulance';
-        color = 0xf8fafc;
-      } else if (i % 9 === 0) {
-        kind = 'bus';
-        color = 0x1d4ed8;
-      } else if (i % 7 === 0 && hasIndustry) {
-        kind = 'truck';
-        color = 0xe2e8f0;
-      } else if (i % 5 === 0) {
-        kind = 'suv';
-      } else if (i % 6 === 0) {
-        kind = 'moto';
-      } else if (i % 2 === 0) {
-        kind = 'hatch';
-      }
-
-      vehicles.push({
-        id: `veh_${i}`,
-        kind,
-        x: wx,
-        z: wz,
-        dirX: chosen[0],
-        dirZ: chosen[1],
-        rotY: Math.atan2(chosen[0], chosen[1]),
-        baseSpeed: kind === 'moto' ? 3.2 : kind === 'bus' || kind === 'truck' ? 2.0 : 2.55 + (i % 3) * 0.35,
-        currentSpeed: 2.2,
-        braking: false,
-        color,
-        lastDecisionTileKey: '',
-      });
-    }
+  const syncRoads = (_tiles: TileData[]) => {
+    // Authoritative vehicles come from simulation TrafficEngine; nothing needed here.
   };
 
   let animTime = 0;
@@ -433,140 +500,125 @@ export function createTrafficAndCitizenSystem(
     nightGlow: number,
     tiles: TileData[],
     citizens: CitizenAgent[],
+    simVehicles: RoadVehicleSim[],
+    signals: TrafficSignalNode[],
+    pedestrianDensity: number,
     cameraTarget: THREE.Vector3,
     detailDistance: number,
   ) => {
     if (!simPaused) {
-      animTime += dt * Math.max(0.8, Math.min(2.4, speedMultiplier));
+      animTime += dt * Math.max(0.5, Math.min(2.2, speedMultiplier));
     }
 
-    headlightMat.emissiveIntensity = 0.15 + nightGlow * 2.2;
-    taillightMat.emissiveIntensity = 0.2 + nightGlow * 1.4;
-    beaconMat.emissiveIntensity = !simPaused && Math.sin(animTime * 14) > 0 ? 1.8 : 0.25;
+    headlightMat.emissiveIntensity = 0.18 + nightGlow * 2.3;
+    taillightMat.emissiveIntensity = 0.25 + nightGlow * 1.4;
+    beaconMat.emissiveIntensity = !simPaused && Math.sin(animTime * 14) > 0 ? 1.85 : 0.25;
     beaconMat.emissive.setHex(Math.sin(animTime * 14) > 0 ? 0xef4444 : 0x3b82f6);
 
-    // --- Update Vehicles ---
-    const vCount = vehicles.length;
+    // --- 1. Render Traffic Signal Poles & LEDs ---
+    const sigCount = Math.min(maxSignals, signals.length);
+    let poleIdx = 0;
+    let lensIdx = 0;
+    for (let i = 0; i < sigCount; i++) {
+      const sig = signals[i];
+      const [wx, wz] = tileToWorld(sig.x, sig.z);
+      const tile = tiles[sig.z * GRID_SIZE + sig.x];
+      const baseY = (tile ? getTilePadElevation(tile) : 0.06) + 0.05;
+
+      // Two corner posts per signalized intersection (NS & EW)
+      const nsAspect = getSignalAspectForDirection(sig, 0, 1);
+      const ewAspect = getSignalAspectForDirection(sig, 1, 0);
+
+      const corners: Array<[number, number, 'green' | 'yellow' | 'red']> = [
+        [wx - 0.72, wz - 0.72, nsAspect],
+        [wx + 0.72, wz + 0.72, ewAspect],
+      ];
+
+      for (const [cx, cz, aspect] of corners) {
+        _dummy.position.set(cx, baseY + 0.24, cz);
+        _dummy.rotation.set(0, 0, 0);
+        _dummy.scale.set(0.035, 0.48, 0.035);
+        _dummy.updateMatrix();
+        signalPoleInst.setMatrixAt(poleIdx++, _dummy.matrix);
+
+        _dummy.position.set(cx, baseY + 0.47, cz);
+        _dummy.scale.set(0.075, 0.09, 0.075);
+        _dummy.updateMatrix();
+        signalLensInst.setMatrixAt(lensIdx, _dummy.matrix);
+        _color.setHex(aspect === 'green' ? 0x22c55e : aspect === 'yellow' ? 0xf59e0b : 0xef4444);
+        signalLensInst.setColorAt(lensIdx, _color);
+        lensIdx++;
+      }
+    }
+    signalPoleInst.count = poleIdx;
+    signalLensInst.count = lensIdx;
+    signalPoleInst.instanceMatrix.needsUpdate = true;
+    signalLensInst.instanceMatrix.needsUpdate = true;
+    if (signalLensInst.instanceColor) signalLensInst.instanceColor.needsUpdate = true;
+
+    // --- 2. Render Simulation-Driven Vehicles ---
+    vehicles.length = 0;
+    const vCount = Math.min(maxVehicles, simVehicles.length);
     let wheelCount = 0;
     let hlCount = 0;
     let tlCount = 0;
     let beaconCount = 0;
 
     for (let i = 0; i < vCount; i++) {
-      const v = vehicles[i];
-      const spec = VEHICLE_SPECS[v.kind];
-      const coords = worldToTile(v.x, v.z);
+      const sv = simVehicles[i];
+      const seed = hashStr(sv.id);
+      const kind = mapRoleToVehicleKind(sv, seed);
+      const spec = VEHICLE_SPECS[kind];
+
+      const [wxCenter, wzCenter] = tileToWorld(sv.x, sv.z);
+      const coords = worldToTile(wxCenter, wzCenter);
       const tile = coords ? tiles[coords[1] * GRID_SIZE + coords[0]] : null;
       const roadBaseY = (tile ? getTilePadElevation(tile) : 0.06) + 0.058;
 
-      if (!simPaused && speedMultiplier > 0) {
-        // Check braking proximity to vehicle ahead on same lane
-        let blocked = false;
-        for (let j = 0; j < vCount; j++) {
-          if (i === j) continue;
-          const o = vehicles[j];
-          const dx = o.x - v.x;
-          const dz = o.z - v.z;
-          const forwardDot = dx * v.dirX + dz * v.dirZ;
-          const lateralDot = Math.abs(dx * -v.dirZ + dz * v.dirX);
-          if (forwardDot > 0.1 && forwardDot < 1.35 && lateralDot < 0.35 && o.dirX === v.dirX && o.dirZ === v.dirZ) {
-            blocked = true;
-            break;
-          }
-        }
-        v.braking = blocked;
-        const targetSpd = blocked ? 0 : v.baseSpeed;
-        v.currentSpeed = THREE.MathUtils.damp(v.currentSpeed, targetSpd, blocked ? 9 : 4, dt * speedMultiplier);
+      const dirX = Math.sin(sv.yaw);
+      const dirZ = Math.cos(sv.yaw);
+      const laneOff = kind === 'moto' ? 0.16 : 0.26;
+      const px = wxCenter - dirZ * laneOff;
+      const pz = wzCenter + dirX * laneOff;
 
-        v.x += v.dirX * v.currentSpeed * dt * speedMultiplier;
-        v.z += v.dirZ * v.currentSpeed * dt * speedMultiplier;
+      const isBraking = sv.braking || sv.waitingAtSignal || sv.waitingForCrosswalk || sv.speed < 0.05;
 
-        // Smooth intersection steering & boundary clamping
-        const nextCoords = worldToTile(v.x, v.z);
-        const curTile = nextCoords ? tiles[nextCoords[1] * GRID_SIZE + nextCoords[0]] : null;
-        if (nextCoords && curTile && curTile.road !== 'none') {
-          const [cx, cz] = tileToWorld(nextCoords[0], nextCoords[1]);
-          const distCenter = Math.hypot(v.x - cx, v.z - cz);
-          const key = `${nextCoords[0]}_${nextCoords[1]}`;
-          if (distCenter < 0.24 && v.lastDecisionTileKey !== key) {
-            v.lastDecisionTileKey = key;
-            const candidates: [number, number][] = [];
-            const dirs: [number, number][] = [
-              [1, 0],
-              [-1, 0],
-              [0, 1],
-              [0, -1],
-            ];
-            for (const [dx, dz] of dirs) {
-              if (dx === -v.dirX && dz === -v.dirZ) continue; // Avoid instant U-turn if alternatives exist
-              const nx = nextCoords[0] + dx;
-              const nz = nextCoords[1] + dz;
-              if (nx >= 0 && nz >= 0 && nx < GRID_SIZE && nz < GRID_SIZE) {
-                if (tiles[nz * GRID_SIZE + nx].road !== 'none') {
-                  candidates.push([dx, dz]);
-                }
-              }
-            }
-            if (candidates.length > 0) {
-              // Deterministic pseudo-random choice per vehicle + tile
-              const pickIdx = (i * 11 + nextCoords[0] * 7 + nextCoords[1] * 13) % candidates.length;
-              const [ndx, ndz] = candidates[pickIdx];
-              if (ndx !== v.dirX || ndz !== v.dirZ) {
-                v.dirX = ndx;
-                v.dirZ = ndz;
-                v.x = cx;
-                v.z = cz;
-              }
-            } else {
-              // Dead-end turnaround
-              v.dirX = -v.dirX;
-              v.dirZ = -v.dirZ;
-            }
-          }
-        } else {
-          // Off-road guard: snap back onto nearest valid road tile
-          const fallbackRoad = tiles.find((t) => t.road !== 'none');
-          if (fallbackRoad) {
-            const [rx, rz] = tileToWorld(fallbackRoad.x, fallbackRoad.z);
-            v.x = rx;
-            v.z = rz;
-          }
-        }
+      vehicles.push({
+        id: sv.id,
+        kind,
+        x: px,
+        z: pz,
+        rotY: sv.yaw,
+        currentSpeed: sv.speed,
+        braking: isBraking,
+        color: sv.color,
+      });
+
+      if (!simPaused) {
+        const prevPhase = vehicleWheelPhase.get(sv.id) ?? 0;
+        vehicleWheelPhase.set(sv.id, prevPhase + (sv.speed * dt * 2) / Math.max(0.03, spec.wheelR));
       }
+      const wheelRotX = vehicleWheelPhase.get(sv.id) ?? 0;
 
-      // Smooth yaw orientation
-      const goalYaw = Math.atan2(v.dirX, v.dirZ);
-      let diff = goalYaw - v.rotY;
-      while (diff > Math.PI) diff -= Math.PI * 2;
-      while (diff < -Math.PI) diff += Math.PI * 2;
-      v.rotY += diff * Math.min(1, dt * 12);
-
-      // Right-hand lane offset
-      const laneOff = v.kind === 'moto' ? 0.18 : 0.27;
-      const px = v.x - v.dirZ * laneOff;
-      const pz = v.z + v.dirX * laneOff;
-      const sinY = Math.sin(v.rotY);
-      const cosY = Math.cos(v.rotY);
-
-      // 1. Body
+      // Body
       _dummy.position.set(px, roadBaseY + spec.wheelR + spec.bodyH * 0.5, pz);
-      _dummy.rotation.set(0, v.rotY, 0);
+      _dummy.rotation.set(0, sv.yaw, 0);
       _dummy.scale.set(spec.bodyW, spec.bodyH, spec.bodyL);
       _dummy.updateMatrix();
       bodyInst.setMatrixAt(i, _dummy.matrix);
-      _color.setHex(v.color);
+      _color.setHex(sv.color);
       bodyInst.setColorAt(i, _color);
 
-      // 2. Cabin / Glass Greenhouse
-      const cabX = px + sinY * spec.cabZOffset;
-      const cabZ = pz + cosY * spec.cabZOffset;
+      // Cabin
+      const cabX = px + dirX * spec.cabZOffset;
+      const cabZ = pz + dirZ * spec.cabZOffset;
       _dummy.position.set(cabX, roadBaseY + spec.wheelR + spec.bodyH + spec.cabH * 0.45, cabZ);
-      _dummy.rotation.set(0, v.rotY, 0);
+      _dummy.rotation.set(0, sv.yaw, 0);
       _dummy.scale.set(spec.cabW, spec.cabH, spec.cabL);
       _dummy.updateMatrix();
       cabInst.setMatrixAt(i, _dummy.matrix);
 
-      // 3. 4 Wheels
+      // 4 Wheels rotating cleanly with traveled distance
       const wxOff = spec.bodyW * 0.48;
       const wzOff = spec.axleSpread;
       const wheelOffsets: [number, number][] = [
@@ -576,45 +628,39 @@ export function createTrafficAndCitizenSystem(
         [wxOff, -wzOff],
       ];
       for (const [lx, lz] of wheelOffsets) {
-        const wpx = px + lx * cosY + lz * sinY;
-        const wpz = pz - lx * sinY + lz * cosY;
+        const wpx = px + lx * dirZ + lz * dirX;
+        const wpz = pz - lx * dirX + lz * dirZ;
         _dummy.position.set(wpx, roadBaseY + spec.wheelR, wpz);
-        _dummy.rotation.set(0, v.rotY, 0);
+        _dummy.rotation.set(wheelRotX, sv.yaw, 0);
         _dummy.scale.set(spec.wheelW, spec.wheelR, spec.wheelR);
         _dummy.updateMatrix();
         wheelInst.setMatrixAt(wheelCount++, _dummy.matrix);
       }
 
-      // 4. Headlights (+Z local front) & Taillights (-Z local rear)
+      // Headlights & Taillights
       const lightW = spec.bodyW * 0.34;
       const halfL = spec.bodyL * 0.502;
       const lightY = roadBaseY + spec.wheelR + spec.bodyH * 0.48;
       for (const side of [-1, 1]) {
         const lx = side * lightW;
-        // Front headlight
-        _dummy.position.set(px + lx * cosY + halfL * sinY, lightY, pz - lx * sinY + halfL * cosY);
-        _dummy.rotation.set(0, v.rotY, 0);
+        _dummy.position.set(px + lx * dirZ + halfL * dirX, lightY, pz - lx * dirX + halfL * dirZ);
+        _dummy.rotation.set(0, sv.yaw, 0);
         _dummy.scale.set(0.05, 0.035, 0.02);
         _dummy.updateMatrix();
         headLightInst.setMatrixAt(hlCount++, _dummy.matrix);
 
-        // Rear taillight (larger when braking)
-        const tlScale = v.braking ? 1.45 : 1.0;
-        _dummy.position.set(px + lx * cosY - halfL * sinY, lightY, pz - lx * sinY - halfL * cosY);
-        _dummy.scale.set(0.055 * tlScale, 0.036 * tlScale, 0.02);
+        const tlScale = isBraking ? 1.55 : 1.0;
+        _dummy.position.set(px + lx * dirZ - halfL * dirX, lightY, pz - lx * dirX - halfL * dirZ);
+        _dummy.scale.set(0.055 * tlScale, 0.038 * tlScale, 0.02);
         _dummy.updateMatrix();
         tailLightInst.setMatrixAt(tlCount++, _dummy.matrix);
       }
 
-      // 5. Emergency lightbar on police / ambulance
-      if (v.kind === 'police' || v.kind === 'ambulance') {
-        _dummy.position.set(
-          cabX,
-          roadBaseY + spec.wheelR + spec.bodyH + spec.cabH + 0.02,
-          cabZ,
-        );
-        _dummy.rotation.set(0, v.rotY, 0);
-        _dummy.scale.set(spec.cabW * 0.65, 0.035, 0.06);
+      // Emergency lightbar
+      if (kind === 'police' || kind === 'ambulance' || kind === 'fire') {
+        _dummy.position.set(cabX, roadBaseY + spec.wheelR + spec.bodyH + spec.cabH + 0.025, cabZ);
+        _dummy.rotation.set(0, sv.yaw, 0);
+        _dummy.scale.set(spec.cabW * 0.68, 0.035, 0.065);
         _dummy.updateMatrix();
         beaconInst.setMatrixAt(beaconCount++, _dummy.matrix);
       }
@@ -635,13 +681,20 @@ export function createTrafficAndCitizenSystem(
     tailLightInst.instanceMatrix.needsUpdate = true;
     beaconInst.instanceMatrix.needsUpdate = true;
 
-    // --- Update Citizens (Articulated Near LOD + Multi-Part Instanced Far LOD) ---
+    // --- 3. Articulated Citizens with AnimationMixer & Building Hiding ---
     let nearIdx = 0;
     let farIdx = 0;
-    const citTotal = Math.min(maxFarCitizens, citizens.length);
+    const densityCap = Math.max(
+      12,
+      Math.round(citizens.length * Math.min(1.5, Math.max(0.2, pedestrianDensity))),
+    );
+    const citTotal = Math.min(maxFarCitizens, densityCap, citizens.length);
 
     for (let i = 0; i < citTotal; i++) {
       const cit = citizens[i];
+      // Hide citizen cleanly when inside a building
+      if (cit.insideBuildingId) continue;
+
       const [wx, wz] = tileToWorld(cit.x, cit.z);
       const coords = worldToTile(wx, wz);
       const tile = coords ? tiles[coords[1] * GRID_SIZE + coords[0]] : null;
@@ -649,41 +702,39 @@ export function createTrafficAndCitizenSystem(
 
       const camDist = Math.hypot(wx - cameraTarget.x, wz - cameraTarget.z);
       const seed = hashStr(cit.id);
-      const shirtHex = cit.state === 'protesting' ? 0xef4444 : cit.shirtColor;
+      const shirtHex = cit.behaviorState === 'Protesting' || cit.state === 'protesting' ? 0xef4444 : cit.shirtColor;
 
       if (camDist <= detailDistance && nearIdx < maxDetailedCitizens) {
         const rig = humanPool[nearIdx++];
         rig.group.visible = true;
+        rig.group.position.set(wx, groundY, wz);
+        rig.group.rotation.y = cit.yaw ?? 0;
 
-        const isMoving =
-          cit.state === 'commuting' || cit.state === 'seeking_job' || cit.state === 'seeking_home';
-        const isProtesting = cit.state === 'protesting';
-        const isTalking = cit.state === 'shopping' || cit.state === 'idle';
-        const phase = animTime * 7.5 + (seed % 100) * 0.1;
-
-        const stride = !simPaused && isMoving ? Math.sin(phase) * 0.55 : 0;
-        const bob = !simPaused && isMoving ? Math.abs(Math.sin(phase)) * 0.025 : 0;
-
-        rig.group.position.set(wx, groundY + bob, wz);
-        const yaw = Math.atan2(cit.targetX - cit.x, cit.targetZ - cit.z);
-        if (Math.hypot(cit.targetX - cit.x, cit.targetZ - cit.z) > 0.02) {
-          rig.group.rotation.y = yaw;
-        }
-        const heightScale = 0.92 + (seed % 16) * 0.012;
+        const heightScale = cit.age <= 14 ? 0.78 : 0.92 + (seed % 16) * 0.012;
         rig.group.scale.setScalar(heightScale);
 
-        rig.leftLegPivot.rotation.x = stride;
-        rig.rightLegPivot.rotation.x = -stride;
+        const desiredAnim: CitizenAnimState = cit.animState ?? 'Idle';
+        if (rig.activeState !== desiredAnim) {
+          const prevAction = rig.actions[rig.activeState];
+          const nextAction = rig.actions[desiredAnim];
+          if (nextAction) {
+            nextAction.reset().fadeIn(0.18).play();
+            if (prevAction && prevAction !== nextAction) {
+              prevAction.fadeOut(0.18);
+            }
+            rig.activeState = desiredAnim;
+          }
+        }
 
-        if (isProtesting && !simPaused) {
-          rig.leftArmPivot.rotation.x = -2.4 + Math.sin(phase * 1.4) * 0.3;
-          rig.rightArmPivot.rotation.x = -2.1 + Math.cos(phase * 1.4) * 0.3;
-        } else if (isTalking && !simPaused) {
-          rig.leftArmPivot.rotation.x = -0.35 + Math.sin(phase * 0.6) * 0.18;
-          rig.rightArmPivot.rotation.x = -0.25 + Math.cos(phase * 0.6) * 0.15;
-        } else {
-          rig.leftArmPivot.rotation.x = -stride * 0.85;
-          rig.rightArmPivot.rotation.x = stride * 0.85;
+        // Couple gait playback rate strictly to physical speed (eliminates foot sliding!)
+        const spd = cit.currentSpeed ?? 0;
+        const speedRatio =
+          desiredAnim === 'Run' || desiredAnim === 'WalkFast' || desiredAnim === 'Walk' || desiredAnim === 'WalkSlow'
+            ? Math.max(0.55, Math.min(2.1, spd / 0.19))
+            : 1.0;
+
+        if (!simPaused) {
+          rig.mixer.update(dt * speedRatio);
         }
 
         (rig.torsoMesh.material as THREE.MeshStandardMaterial).color.setHex(shirtHex);
@@ -699,12 +750,10 @@ export function createTrafficAndCitizenSystem(
           HAIR_TONES[(seed >> 6) % HAIR_TONES.length],
         );
       } else if (farIdx < maxFarCitizens) {
-        const bob =
-          !simPaused && cit.state !== 'working'
-            ? Math.abs(Math.sin(animTime * 6 + i)) * 0.025
-            : 0;
+        const isMoving = cit.movementState === 'walking' || cit.movementState === 'jogging';
+        const bob = !simPaused && isMoving ? Math.abs(Math.sin(animTime * 6 + i)) * 0.022 : 0;
         _dummy.position.set(wx, groundY + 0.085 + bob, wz);
-        _dummy.rotation.set(0, 0, 0);
+        _dummy.rotation.set(0, cit.yaw ?? 0, 0);
         _dummy.scale.set(1, 1, 1);
         _dummy.updateMatrix();
         farLegsInst.setMatrixAt(farIdx, _dummy.matrix);
@@ -757,7 +806,16 @@ export function createTrafficAndCitizenSystem(
     pickVehicleAt,
     getVehicleById,
     dispose: () => {
-      [bodyInst, cabInst, wheelInst, headLightInst, tailLightInst, beaconInst].forEach((inst) => {
+      [
+        bodyInst,
+        cabInst,
+        wheelInst,
+        headLightInst,
+        tailLightInst,
+        beaconInst,
+        signalPoleInst,
+        signalLensInst,
+      ].forEach((inst) => {
         scene.remove(inst);
       });
       [farLegsInst, farTorsoInst, farHeadInst].forEach((inst) => {
@@ -765,6 +823,7 @@ export function createTrafficAndCitizenSystem(
       });
       scene.remove(detailedGroup);
       humanPool.forEach((rig) => {
+        rig.mixer.stopAllAction();
         (rig.torsoMesh.material as THREE.Material).dispose();
         (rig.leftLegMesh.material as THREE.Material).dispose();
         (rig.headMesh.material as THREE.Material).dispose();
@@ -783,6 +842,8 @@ export function createTrafficAndCitizenSystem(
       headlightMat.dispose();
       taillightMat.dispose();
       beaconMat.dispose();
+      signalPoleMat.dispose();
+      signalLensMat.dispose();
       farTorsoMat.dispose();
       farLegsMat.dispose();
       farHeadMat.dispose();

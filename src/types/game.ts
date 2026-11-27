@@ -66,6 +66,16 @@ export type TerrainType = 'grass' | 'fertile' | 'waterfront' | 'hill';
 
 export type TileOwnerType = 'public' | 'available' | 'private' | 'occupied';
 
+export type ZoningType = 'none' | 'residential' | 'commercial' | 'industrial' | 'mixed' | 'civic' | 'green';
+
+export type BuildingLifecycleStage =
+  | 'planned'
+  | 'construction_site'
+  | 'under_construction'
+  | 'operational'
+  | 'remodeling'
+  | 'abandoned';
+
 export interface PlacedBuilding {
   id: string;
   type: BuildingTypeId;
@@ -78,6 +88,12 @@ export interface PlacedBuilding {
   connectedRoad: boolean;
   builtAtDay: number;
   condition: number; // 0-100
+  constructionStage?: BuildingLifecycleStage;
+  constructionProgress?: number; // 0-100
+  occupantIds?: string[];
+  entranceTile?: { x: number; z: number };
+  variantSeed?: number;
+  zone?: ZoningType;
 }
 
 export interface TileConflict {
@@ -110,6 +126,8 @@ export interface TileData {
   leisureCoverage: number; // 0-100
   trafficLoad: number; // 0-100
   conflict: TileConflict | null;
+  zone?: ZoningType;
+  busStop?: boolean;
 }
 
 export type CitizenState =
@@ -121,6 +139,70 @@ export type CitizenState =
   | 'seeking_job'
   | 'seeking_home'
   | 'protesting';
+
+export type CitizenBehaviorState =
+  | 'Sleeping'
+  | 'AtHome'
+  | 'PreparingForWork'
+  | 'WalkingToDestination'
+  | 'WaitingForTransport'
+  | 'RidingTransport'
+  | 'Driving'
+  | 'CrossingStreet'
+  | 'Working'
+  | 'Studying'
+  | 'Shopping'
+  | 'Eating'
+  | 'Exercising'
+  | 'Socializing'
+  | 'SeekingJob'
+  | 'SeekingHome'
+  | 'ReceivingMedicalCare'
+  | 'Protesting'
+  | 'ReturningHome'
+  | 'WaitingForPath';
+
+export type CitizenPersonality =
+  | 'sociavel'
+  | 'reservado'
+  | 'organizado'
+  | 'aventureiro'
+  | 'trabalhador'
+  | 'tranquilo'
+  | 'ambicioso'
+  | 'comunitario';
+
+export type CitizenScheduleProfile =
+  | 'crianca'
+  | 'estudante'
+  | 'universitario'
+  | 'clt'
+  | 'comerciante'
+  | 'empresario'
+  | 'autonomo'
+  | 'desempregado'
+  | 'aposentado'
+  | 'saude'
+  | 'servidor';
+
+export type CitizenAnimState =
+  | 'Idle'
+  | 'WalkSlow'
+  | 'Walk'
+  | 'WalkFast'
+  | 'Run'
+  | 'Sit'
+  | 'Talk'
+  | 'Wait'
+  | 'Shop'
+  | 'Work';
+
+export type TransportMode = 'walk' | 'bus' | 'car';
+
+export interface PathPoint {
+  x: number;
+  z: number;
+}
 
 export interface CitizenAgent {
   id: string;
@@ -140,6 +222,10 @@ export interface CitizenAgent {
     health: number;
     education: number;
     safety: number;
+    energy?: number;
+    hunger?: number;
+    leisure?: number;
+    transport?: number;
   };
   state: CitizenState;
   opinion: number; // 0-100 approval of mayor
@@ -151,6 +237,146 @@ export interface CitizenAgent {
   targetZ: number;
   speed: number;
   shirtColor: number;
+  // Living World & Intelligent NPC extensions (optional for legacy save compatibility)
+  birthDay?: number;
+  birthYear?: number;
+  householdId?: string | null;
+  residenceBuildingId?: string | null;
+  balance?: number;
+  monthlyExpenses?: number;
+  jobSatisfaction?: number;
+  personality?: CitizenPersonality;
+  scheduleProfile?: CitizenScheduleProfile;
+  staggerMinutes?: number;
+  behaviorState?: CitizenBehaviorState;
+  intent?: string;
+  activity?: string;
+  movementState?: 'stopped' | 'walking' | 'jogging' | 'riding' | 'driving' | 'waiting';
+  animState?: CitizenAnimState;
+  transportMode?: TransportMode;
+  insideBuildingId?: string | null;
+  targetBuildingId?: string | null;
+  activityUntilHour?: number;
+  activityMinDurationHours?: number;
+  yaw?: number;
+  currentSpeed?: number;
+  path?: PathPoint[];
+  pathIndex?: number;
+  blockedTicks?: number;
+  unreachableCount?: number;
+  decisionCooldown?: number;
+  talkingWithId?: string | null;
+  history?: string[];
+}
+
+export interface Household {
+  id: string;
+  surname: string;
+  residenceBuildingId: string | null;
+  homeTileKey: string | null;
+  memberIds: string[];
+  monthlyRent: number;
+  happiness: number;
+}
+
+export interface Workplace {
+  buildingId: string;
+  tileKey: string;
+  type: BuildingTypeId;
+  name: string;
+  capacity: number;
+  workerIds: string[];
+  requiredEducation: 'Básico' | 'Médio' | 'Superior';
+  averageWage: number;
+  operational: boolean;
+}
+
+export type SignalPhase = 'NS_GREEN' | 'NS_YELLOW' | 'EW_GREEN' | 'EW_YELLOW' | 'PED_CROSS';
+
+export interface TrafficSignalNode {
+  tileKey: string;
+  x: number;
+  z: number;
+  phase: SignalPhase;
+  timer: number;
+}
+
+export type VehicleRole = 'commuter' | 'cargo' | 'bus' | 'police' | 'ambulance' | 'fire';
+
+export interface RoadVehicleSim {
+  id: string;
+  role: VehicleRole;
+  color: number;
+  x: number;
+  z: number;
+  yaw: number;
+  speed: number; // world/tile units per second
+  maxSpeed: number;
+  originTileKey: string;
+  destTileKey: string;
+  path: PathPoint[];
+  pathIndex: number;
+  waitingAtSignal: boolean;
+  waitingForCrosswalk: boolean;
+  braking: boolean;
+  stoppedTime: number;
+  lineId?: string;
+  passengerIds?: string[];
+  passengerCapacity?: number;
+  incidentTileKey?: string | null;
+  returningToBase?: boolean;
+  driverCitizenId?: string | null;
+}
+
+export interface TransitLine {
+  id: string;
+  name: string;
+  color: number;
+  stopTileKeys: string[];
+  waitingByStop: Record<string, string[]>;
+  activeBusIds: string[];
+}
+
+export interface EmergencyDispatch {
+  id: string;
+  kind: 'ambulance' | 'fire' | 'police';
+  stationTileKey: string;
+  targetTileKey: string;
+  vehicleId: string;
+  status: 'en_route' | 'on_scene' | 'returning';
+  timer: number;
+  description: string;
+}
+
+export type SpeedValue = 0 | 0.5 | 1 | 2 | 4 | 8;
+
+export type TimePreset = 'relaxed' | 'balanced' | 'strategic';
+
+export interface GameTimeConfig {
+  secondsPerDay: number; // 60..300 (default 180)
+  preset: TimePreset;
+  npcSpeedMultiplier: number; // 0.5..2.0
+  trafficIntensity: number; // 0.2..1.5
+  pedestrianDensity: number; // 0.2..1.5
+  vegetationDensity: number; // 0.2..1.5
+  cameraSpeed: number; // 0.4..2.0
+  ambientAudioEnabled: boolean;
+  ambientVolume: number; // 0..1
+  debugOverlay: boolean;
+  creativeInstantBuild: boolean;
+}
+
+export interface CitySimulationStats {
+  fps: number;
+  simStepMs: number;
+  activeNpcs: number;
+  insideBuildingNpcs: number;
+  blockedNpcs: number;
+  activeVehicles: number;
+  busPassengers: number;
+  pedestrianNodes: number;
+  roadNodes: number;
+  cachedRoutes: number;
 }
 
 export type ThematicMapMode =

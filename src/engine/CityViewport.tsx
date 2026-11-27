@@ -14,7 +14,7 @@ import {
   ThematicMapMode,
   TileData,
 } from '../types/game';
-import { useGameStore } from '../store/useGameStore';
+import { getNavigationCache, useGameStore } from '../store/useGameStore';
 import {
   CityAssetManager,
   LOCAL_ASSET_MANIFEST,
@@ -37,6 +37,7 @@ import {
 } from './terrainAndRoads';
 import { createTrafficAndCitizenSystem } from './entities3D';
 import { createNaturalEnvironment } from './environment3D';
+import { ambientAudioEngine } from '../audio/ambientAudio';
 
 // Module-scope reusable math objects for zero GC inside render loop
 const _vec3 = new THREE.Vector3();
@@ -350,6 +351,65 @@ export const CityViewport: React.FC = () => {
     ghostPad.position.y = 0.03;
     ghostHolder.add(ghostPad);
 
+    // Citizen planned route visual ribbon
+    const routeGeo = new THREE.BufferGeometry();
+    const routeMat = new THREE.LineBasicMaterial({
+      color: 0x38bdf8,
+      transparent: true,
+      opacity: 0.9,
+    });
+    const routeLine = new THREE.Line(routeGeo, routeMat);
+    routeLine.visible = false;
+    scene.add(routeLine);
+
+    // Optional Diagnostics Overlay (PedestrianGraph & RoadGraph)
+    const debugGroup = new THREE.Group();
+    debugGroup.visible = false;
+    scene.add(debugGroup);
+    const pedDebugMat = new THREE.LineBasicMaterial({ color: 0x22c55e, transparent: true, opacity: 0.55 });
+    const roadDebugMat = new THREE.LineBasicMaterial({ color: 0xf59e0b, transparent: true, opacity: 0.7 });
+    let lastDebugGridVersion = -1;
+
+    const rebuildDebugGraphLines = () => {
+      while (debugGroup.children.length > 0) {
+        const ch = debugGroup.children[0] as THREE.LineSegments;
+        ch.geometry.dispose();
+        debugGroup.remove(ch);
+      }
+      const nav = getNavigationCache();
+      const pedVerts: number[] = [];
+      for (const node of nav.pedestrianGraph.nodes.values()) {
+        const [ax, az] = tileToWorld(node.x, node.z);
+        for (const edge of node.edges) {
+          const nb = nav.pedestrianGraph.nodes.get(edge.to);
+          if (!nb || node.id > nb.id) continue;
+          const [bx, bz] = tileToWorld(nb.x, nb.z);
+          pedVerts.push(ax, 0.24, az, bx, 0.24, bz);
+        }
+      }
+      if (pedVerts.length > 0) {
+        const gPed = new THREE.BufferGeometry();
+        gPed.setAttribute('position', new THREE.Float32BufferAttribute(pedVerts, 3));
+        debugGroup.add(new THREE.LineSegments(gPed, pedDebugMat));
+      }
+
+      const roadVerts: number[] = [];
+      for (const rn of nav.roadGraph.nodes.values()) {
+        const [ax, az] = tileToWorld(rn.x, rn.z);
+        for (const nk of rn.neighbors) {
+          const nb = nav.roadGraph.nodes.get(nk);
+          if (!nb || rn.id > nb.id) continue;
+          const [bx, bz] = tileToWorld(nb.x, nb.z);
+          roadVerts.push(ax, 0.28, az, bx, 0.28, bz);
+        }
+      }
+      if (roadVerts.length > 0) {
+        const gRoad = new THREE.BufferGeometry();
+        gRoad.setAttribute('position', new THREE.Float32BufferAttribute(roadVerts, 3));
+        debugGroup.add(new THREE.LineSegments(gRoad, roadDebugMat));
+      }
+    };
+
     let lastGhostKey = '';
     let lastGridVersion = -1;
     let lastThematicVersion = -1;
@@ -388,13 +448,15 @@ export const CityViewport: React.FC = () => {
         if (tile.building) {
           const b = tile.building;
           const bGroup = buildProceduralBuildingMesh(b.type, b.level, mats, {
-            seed: tile.x * 37 + tile.z * 97 + b.rotation * 13,
+            seed: b.variantSeed ?? tile.x * 37 + tile.z * 97 + b.rotation * 13,
             condition: b.condition,
             pollution: tile.pollution,
             powered: b.powered,
             watered: b.watered,
             plannedDistrict: tile.plannedDistrict,
             landValue: tile.landValue,
+            constructionStage: b.constructionStage,
+            constructionProgress: b.constructionProgress,
           });
           bGroup.position.set(wx, padY, wz);
           bGroup.rotation.y = b.rotation * (Math.PI / 2);
@@ -494,6 +556,7 @@ export const CityViewport: React.FC = () => {
           let closestCitizenId: string | null = null;
           let bestCitizenDist = 0.72;
           for (const cit of state.citizens) {
+            if (cit.insideBuildingId) continue;
             const [cx, cz] = tileToWorld(cit.x, cit.z);
             const dist = Math.hypot(hitPoint.x - cx, hitPoint.z - cz);
             if (dist < bestCitizenDist) {
@@ -580,6 +643,8 @@ export const CityViewport: React.FC = () => {
     // 9. Main 4D Game & Render Loop
     const clock = new THREE.Clock();
     let elapsedSec = 0;
+    let fpsAccumulator = 0;
+    let fpsFrames = 0;
 
     const afterDraw = (cb: () => void) => {
       if (disposed || isContextLost) return;
@@ -680,7 +745,7 @@ export const CityViewport: React.FC = () => {
       // Pause sync for vehicles and animated citizens
       const simPaused =
         updated.speed === 0 || updated.activeEvent !== null || updated.endGameReport !== null;
-      const speedMult = simPaused ? 0 : Math.min(4, updated.speed);
+      const speedMult = simPaused ? 0 : Math.min(2.5, Math.max(0.5, updated.speed));
       trafficAndCitizens.update(
         dt,
         simPaused,
@@ -688,11 +753,39 @@ export const CityViewport: React.FC = () => {
         atmo.nightGlow,
         updated.tiles,
         updated.citizens,
+        updated.vehicles,
+        updated.trafficSignals,
+        updated.timeConfig.pedestrianDensity,
         controls.target,
         profile.citizenDetailDistance,
       );
 
-      // Selection Rings
+      // Update optional procedural ambient audio
+      ambientAudioEngine.update(
+        updated.timeConfig.ambientAudioEnabled,
+        updated.timeConfig.ambientVolume,
+        updated.hourOfDay,
+        dt,
+        updated.tiles.filter((t) => t.building?.type === 'praca' || t.building?.type === 'parque').length,
+      );
+
+      // FPS reporting for diagnostics HUD
+      fpsAccumulator += dt;
+      fpsFrames += 1;
+      if (fpsAccumulator >= 1.2) {
+        updated.reportRenderFps(fpsFrames / fpsAccumulator);
+        fpsAccumulator = 0;
+        fpsFrames = 0;
+      }
+
+      // Debug Overlay visibility & sync
+      debugGroup.visible = updated.timeConfig.debugOverlay;
+      if (debugGroup.visible && lastDebugGridVersion !== updated.gridVersion) {
+        rebuildDebugGraphLines();
+        lastDebugGridVersion = updated.gridVersion;
+      }
+
+      // Selection Rings & Citizen Planned Route Line
       if (updated.selectedTileCoords) {
         const st = updated.tiles[updated.selectedTileCoords.z * GRID_SIZE + updated.selectedTileCoords.x];
         const [wx, wz] = tileToWorld(updated.selectedTileCoords.x, updated.selectedTileCoords.z);
@@ -709,12 +802,28 @@ export const CityViewport: React.FC = () => {
           const [wx, wz] = tileToWorld(cit.x, cit.z);
           const cy = groundHeightAt(wx, wz, updated.tiles) + 0.05;
           citizenRing.position.set(wx, cy, wz);
-          citizenRing.visible = true;
+          citizenRing.visible = !cit.insideBuildingId;
+
+          if (updated.showCitizenRoute && cit.path && cit.path.length > 0 && !cit.insideBuildingId) {
+            const idxStart = Math.max(0, cit.pathIndex ?? 0);
+            const pts: number[] = [wx, cy + 0.14, wz];
+            for (let pi = idxStart; pi < cit.path.length; pi++) {
+              const [px, pz] = tileToWorld(cit.path[pi].x, cit.path[pi].z);
+              pts.push(px, groundHeightAt(px, pz, updated.tiles) + 0.19, pz);
+            }
+            routeGeo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+            routeGeo.computeBoundingSphere();
+            routeLine.visible = pts.length >= 6;
+          } else {
+            routeLine.visible = false;
+          }
         } else {
           citizenRing.visible = false;
+          routeLine.visible = false;
         }
       } else {
         citizenRing.visible = false;
+        routeLine.visible = false;
       }
 
       // Placement Ghost Preview
@@ -795,8 +904,9 @@ export const CityViewport: React.FC = () => {
         }
       }
 
-      // WASD / Arrow-Key Camera Panning
-      const panSpeed = (updated.cameraMode === 'drone' ? 14 : 20) * dt;
+      // WASD / Arrow-Key Camera Panning (scaled by user cameraSpeed setting)
+      const panSpeed =
+        (updated.cameraMode === 'drone' ? 14 : 20) * dt * (updated.timeConfig.cameraSpeed || 1);
       if (
         keys['KeyW'] ||
         keys['KeyS'] ||
@@ -901,12 +1011,14 @@ export const CityViewport: React.FC = () => {
         const veh = trafficAndCitizens.getVehicleById(updated.followedVehicleId);
         if (veh) {
           const gy = groundHeightAt(veh.x, veh.z, updated.tiles);
+          const vDirX = Math.sin(veh.rotY);
+          const vDirZ = Math.cos(veh.rotY);
           controls.target.x = THREE.MathUtils.damp(controls.target.x, veh.x, 7, dt);
           controls.target.y = THREE.MathUtils.damp(controls.target.y, gy + 0.25, 7, dt);
           controls.target.z = THREE.MathUtils.damp(controls.target.z, veh.z, 7, dt);
-          camera.position.x = THREE.MathUtils.damp(camera.position.x, veh.x - veh.dirX * 5.2 + 3.2, 4.5, dt);
+          camera.position.x = THREE.MathUtils.damp(camera.position.x, veh.x - vDirX * 5.2 + 3.2, 4.5, dt);
           camera.position.y = THREE.MathUtils.damp(camera.position.y, gy + 5.2, 4.5, dt);
-          camera.position.z = THREE.MathUtils.damp(camera.position.z, veh.z - veh.dirZ * 5.2 + 3.2, 4.5, dt);
+          camera.position.z = THREE.MathUtils.damp(camera.position.z, veh.z - vDirZ * 5.2 + 3.2, 4.5, dt);
         }
       } else if (activeCamGoal) {
         controls.target.x = THREE.MathUtils.damp(controls.target.x, activeCamGoal.target.x, 6, dt);
@@ -979,12 +1091,18 @@ export const CityViewport: React.FC = () => {
       while (roadGroup.children.length > 0) roadGroup.remove(roadGroup.children[0]);
       while (buildingsGroup.children.length > 0) buildingsGroup.remove(buildingsGroup.children[0]);
       while (ghostHolder.children.length > 0) ghostHolder.remove(ghostHolder.children[0]);
+      while (debugGroup.children.length > 0) {
+        const ch = debugGroup.children[0] as THREE.LineSegments;
+        ch.geometry.dispose();
+        debugGroup.remove(ch);
+      }
 
       roadBuildResult.dispose();
       terrainRig.dispose();
       envRig.dispose();
       trafficAndCitizens.dispose();
       assetManager.dispose();
+      ambientAudioEngine.dispose();
 
       if (composer) {
         composer.dispose();
@@ -1001,6 +1119,10 @@ export const CityViewport: React.FC = () => {
       selectRingMat.dispose();
       ghostPadGeo.dispose();
       ghostPadMat.dispose();
+      routeGeo.dispose();
+      routeMat.dispose();
+      pedDebugMat.dispose();
+      roadDebugMat.dispose();
       renderer.dispose();
       if (canvas.parentElement === container) {
         container.removeChild(canvas);

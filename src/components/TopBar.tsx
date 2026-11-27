@@ -9,16 +9,23 @@ import {
   Newspaper,
   Pause,
   Play,
+  SkipForward,
   Sliders,
   Sun,
 } from 'lucide-react';
-import { DEVELOPMENT_LEVELS } from '../types/game';
+import { DEVELOPMENT_LEVELS, SpeedValue, TimePreset } from '../types/game';
 import { useGameStore } from '../store/useGameStore';
 
 const MONTH_NAMES = [
   'Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun',
   'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez',
 ];
+
+const PRESET_BADGE: Record<TimePreset, string> = {
+  relaxed: 'Relaxado',
+  balanced: 'Equilibrado',
+  strategic: 'Estratégico',
+};
 
 function getDayPhaseLabel(hour: number): string {
   const h = ((hour % 24) + 24) % 24;
@@ -44,11 +51,16 @@ export const TopBar: React.FC = () => {
   const year = useGameStore((s) => s.year);
   const hourOfDay = useGameStore((s) => s.hourOfDay);
   const speed = useGameStore((s) => s.speed);
+  const timeConfig = useGameStore((s) => s.timeConfig);
   const zenMode = useGameStore((s) => s.zenMode);
   const cameraMode = useGameStore((s) => s.cameraMode);
   const graphicsQuality = useGameStore((s) => s.graphicsQuality);
+  const activeEvent = useGameStore((s) => s.activeEvent);
+  const endGameReport = useGameStore((s) => s.endGameReport);
 
   const setSpeed = useGameStore((s) => s.setSpeed);
+  const advanceToNextDay = useGameStore((s) => s.advanceToNextDay);
+  const advanceToMonthEnd = useGameStore((s) => s.advanceToMonthEnd);
   const toggleZenMode = useGameStore((s) => s.toggleZenMode);
   const setShowNewspaperModal = useGameStore((s) => s.setShowNewspaperModal);
   const setShowCloudModal = useGameStore((s) => s.setShowCloudModal);
@@ -60,6 +72,7 @@ export const TopBar: React.FC = () => {
   const hh = String(Math.floor(hourOfDay)).padStart(2, '0');
   const mm = String(Math.floor((hourOfDay % 1) * 60)).padStart(2, '0');
   const phaseLabel = getDayPhaseLabel(hourOfDay);
+  const canFastSkip = !activeEvent && !endGameReport;
 
   if (zenMode) {
     return (
@@ -150,7 +163,7 @@ export const TopBar: React.FC = () => {
           </span>
         </div>
 
-        {/* Simulation Speed */}
+        {/* Simulation Speed (0, 0.5x, 1x, 2x, 4x, 8x) */}
         <div className="flex items-center bg-slate-900 border border-slate-700 rounded p-0.5">
           <button
             onClick={() => setSpeed(0)}
@@ -161,20 +174,46 @@ export const TopBar: React.FC = () => {
           >
             <Pause className="w-3.5 h-3.5" />
           </button>
-          {([1, 2, 4, 8] as const).map((spd) => (
+          {([0.5, 1, 2, 4, 8] as SpeedValue[]).map((spd) => (
             <button
               key={spd}
               onClick={() => setSpeed(spd)}
+              title={`Velocidade ${spd}x (${timeConfig.secondsPerDay}s/dia base)`}
               className={`px-1.5 py-1 text-[11px] font-mono-num rounded transition-colors whitespace-nowrap ${
                 speed === spd
                   ? 'bg-amber-500 text-slate-950 font-semibold'
                   : 'text-slate-300 hover:text-white'
               }`}
             >
-              {spd === 1 ? <Play className="w-3 h-3 inline mr-0.5" /> : <FastForward className="w-3 h-3 inline mr-0.5" />}
+              {spd === 1 ? (
+                <Play className="w-3 h-3 inline mr-0.5" />
+              ) : spd > 1 ? (
+                <FastForward className="w-3 h-3 inline mr-0.5" />
+              ) : null}
               {spd}x
             </button>
           ))}
+        </div>
+
+        {/* Quick Skip Day / Month */}
+        <div className="flex items-center bg-slate-900 border border-slate-700 rounded p-0.5">
+          <button
+            disabled={!canFastSkip}
+            onClick={advanceToNextDay}
+            title="Avançar para o próximo dia (07:00)"
+            className="px-1.5 py-1 text-[11px] font-mono-num text-slate-300 hover:text-amber-300 disabled:opacity-40 rounded transition-colors whitespace-nowrap"
+          >
+            +1d
+          </button>
+          <button
+            disabled={!canFastSkip}
+            onClick={advanceToMonthEnd}
+            title="Avançar para o fechamento do mês"
+            className="flex items-center gap-0.5 px-1.5 py-1 text-[11px] text-slate-300 hover:text-emerald-300 disabled:opacity-40 rounded transition-colors whitespace-nowrap"
+          >
+            <SkipForward className="w-3 h-3" />
+            <span className="hidden xl:inline">Mês</span>
+          </button>
         </div>
 
         {/* Camera Mode Switcher */}
@@ -206,11 +245,11 @@ export const TopBar: React.FC = () => {
 
         <button
           onClick={() => setShowSettingsModal(true)}
-          title={`Qualidade Gráfica (${graphicsQuality.toUpperCase()})`}
+          title={`Ritmo ${PRESET_BADGE[timeConfig.preset]} (${timeConfig.secondsPerDay}s/dia) · Gráficos ${graphicsQuality.toUpperCase()}`}
           className="flex items-center gap-1 px-2 py-1.5 rounded bg-slate-900 border border-slate-700 hover:border-amber-500/60 text-xs font-medium text-slate-200 transition-colors whitespace-nowrap"
         >
           <Sliders className="w-3.5 h-3.5 text-amber-400" />
-          <span className="hidden md:inline">Gráficos</span>
+          <span className="hidden md:inline">Config</span>
         </button>
 
         <button
